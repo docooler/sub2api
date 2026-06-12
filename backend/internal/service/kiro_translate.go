@@ -181,15 +181,64 @@ func buildClaudeContentItems(text string, toolCalls []kiro.ToolCall) []antigravi
 	return items
 }
 
-// estimateTokens 是一个粗略的输出 token 估算（约 4 字符/token），
-// 仅在上游未返回 usage 时作为兜底。
-func estimateTokens(text string) int {
-	if text == "" {
-		return 0
+// estimateKiroOutputTokens 估算生成文本的输出 token 数。
+// Kiro 的 usage 事件只返回一个 credit 数字，不含 input/output token 拆分，
+// 因此输出 token 始终由生成文本估算。复用与 Gemini/Antigravity 等缺乏精确计数
+// 的平台相同的 estimateTokensForText（ASCII≈4字符/token，CJK≈1 rune/token）。
+func estimateKiroOutputTokens(text string, toolCalls []kiro.ToolCall) int {
+	total := estimateTokensForText(text)
+	// 工具调用的 JSON 参数也属于模型生成内容，计入输出 token。
+	for _, tc := range toolCalls {
+		total += estimateTokensForText(tc.Name)
+		total += estimateTokensForText(tc.Arguments)
 	}
-	n := len([]rune(text)) / 4
-	if n < 1 {
-		n = 1
+	return total
+}
+
+// estimateKiroInputTokens 估算组装后 prompt 的输入 token 数。
+// Kiro 上游不返回 input token，因此从入站消息（system + 历史消息 + tool 结果）
+// 与工具定义中估算，复用 estimateTokensForText 保持与其他平台一致的口径。
+func estimateKiroInputTokens(messages []kiro.UnifiedMessage, systemPrompt string, tools []kiro.UnifiedTool) int {
+	total := estimateTokensForText(systemPrompt)
+
+	for _, m := range messages {
+		total += estimateUnifiedMessageTokens(m)
 	}
-	return n
+
+	for _, t := range tools {
+		total += estimateTokensForText(t.Name)
+		total += estimateTokensForText(t.Description)
+		if t.InputSchema != nil {
+			if b, err := json.Marshal(t.InputSchema); err == nil {
+				total += estimateTokensForText(string(b))
+			}
+		}
+	}
+	return total
+}
+
+// estimateUnifiedMessageTokens 估算单条统一消息的 token 数（文本 + 工具调用 + 工具结果）。
+func estimateUnifiedMessageTokens(m kiro.UnifiedMessage) int {
+	total := 0
+	switch c := m.Content.(type) {
+	case string:
+		total += estimateTokensForText(c)
+	case []map[string]any:
+		for _, block := range c {
+			if t, ok := block["text"].(string); ok {
+				total += estimateTokensForText(t)
+			}
+		}
+	}
+	for _, tc := range m.ToolCalls {
+		if b, err := json.Marshal(tc); err == nil {
+			total += estimateTokensForText(string(b))
+		}
+	}
+	for _, tr := range m.ToolResults {
+		if content, ok := tr["content"].(string); ok {
+			total += estimateTokensForText(content)
+		}
+	}
+	return total
 }
