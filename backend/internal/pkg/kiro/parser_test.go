@@ -128,6 +128,57 @@ func TestParser_FollowupPromptSkipped(t *testing.T) {
 	}
 }
 
+func TestParser_OrderedToolUseEvents(t *testing.T) {
+	p := NewParser()
+	// text, then a tool that completes (stop), then more text, then a trailing
+	// tool that only completes on Flush. Arrival order must be preserved.
+	var events []Event
+	events = append(events, p.Feed([]byte(`{"content":"before"}`))...)
+	events = append(events, p.Feed([]byte(`{"name":"t1","toolUseId":"id1","input":{"a":1},"stop":true}`))...)
+	events = append(events, p.Feed([]byte(`{"content":"after"}`))...)
+	events = append(events, p.Feed([]byte(`{"name":"t2","toolUseId":"id2","input":{"b":2}}`))...)
+	events = append(events, p.Flush()...)
+
+	var order []string
+	for _, e := range events {
+		switch e.Type {
+		case "content":
+			order = append(order, "content:"+e.Text)
+		case "tool_use":
+			if e.Tool == nil {
+				t.Fatalf("tool_use event missing Tool: %#v", e)
+			}
+			order = append(order, "tool:"+e.Tool.Name)
+		}
+	}
+	want := []string{"content:before", "tool:t1", "content:after", "tool:t2"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order[%d] = %q, want %q (full=%#v)", i, order[i], want[i], order)
+		}
+	}
+}
+
+func TestParser_FlushFinalizesTrailingToolOnce(t *testing.T) {
+	p := NewParser()
+	// Tool with no explicit stop: must surface via Flush, exactly once.
+	p.Feed([]byte(`{"name":"only","toolUseId":"idX","input":{"x":1}}`))
+	flushed := p.Flush()
+	if len(flushed) != 1 || flushed[0].Type != "tool_use" || flushed[0].Tool == nil {
+		t.Fatalf("flush = %#v, want one tool_use", flushed)
+	}
+	if flushed[0].Tool.Name != "only" || flushed[0].Tool.Arguments != `{"x":1}` {
+		t.Fatalf("flushed tool = %#v", flushed[0].Tool)
+	}
+	// Flush again is a no-op (already finalized).
+	if again := p.Flush(); len(again) != 0 {
+		t.Fatalf("second flush = %#v, want empty", again)
+	}
+}
+
 func TestParser_MultipleToolCallsDeduplicated(t *testing.T) {
 	p := NewParser()
 	// Same id appears twice; the one with richer args should win.

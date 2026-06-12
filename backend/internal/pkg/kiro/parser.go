@@ -9,11 +9,16 @@ import (
 
 // Event is a parsed streaming event emitted by the parser.
 type Event struct {
-	// Type is one of: "content", "usage", "context_usage".
-	// Tool events are accumulated internally and surfaced via ToolCalls().
+	// Type is one of: "content", "thinking", "tool_use", "usage", "context_usage".
+	// Tool calls are also accumulated internally and surfaced via ToolCalls() for
+	// the non-streaming path; streaming consumers use the "tool_use" events to
+	// preserve content/tool arrival order.
 	Type string
-	// Text carries incremental content text for Type=="content".
+	// Text carries incremental content text for Type=="content" or the reasoning
+	// text for Type=="thinking".
 	Text string
+	// Tool carries a finalized tool call for Type=="tool_use".
+	Tool *ToolCall
 	// Usage carries token usage for Type=="usage" (raw value as float).
 	UsageValue float64
 	// ContextUsage carries the context usage percentage for Type=="context_usage".
@@ -117,8 +122,16 @@ func (p *Parser) Feed(chunk []byte) []Event {
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
 		}
-		if ev, ok := p.processEvent(data, earliestType); ok {
+		// Snapshot the finalized tool-call count so we can surface any tool calls
+		// finalized while processing this event as ordered "tool_use" events.
+		before := len(p.toolCalls)
+		ev, ok := p.processEvent(data, earliestType)
+		if ok {
 			events = append(events, ev)
+		}
+		for _, tc := range p.toolCalls[before:] {
+			finalized := tc
+			events = append(events, Event{Type: "tool_use", Tool: &finalized})
 		}
 	}
 	return events
@@ -215,11 +228,30 @@ func (p *Parser) finalizeToolCall() {
 }
 
 // ToolCalls finalizes any in-flight tool call and returns deduplicated calls.
+// Use this for the non-streaming path where ordering is reconstructed at the end.
 func (p *Parser) ToolCalls() []ToolCall {
 	if p.currentToolCall != nil {
 		p.finalizeToolCall()
 	}
 	return deduplicateToolCalls(p.toolCalls)
+}
+
+// Flush finalizes any in-flight tool call at end-of-stream and returns the
+// newly finalized calls as ordered "tool_use" events. Streaming consumers call
+// this after the response body is fully read so the trailing tool call (which
+// never received an explicit stop event) is still emitted in arrival order.
+func (p *Parser) Flush() []Event {
+	if p.currentToolCall == nil {
+		return nil
+	}
+	before := len(p.toolCalls)
+	p.finalizeToolCall()
+	var events []Event
+	for _, tc := range p.toolCalls[before:] {
+		finalized := tc
+		events = append(events, Event{Type: "tool_use", Tool: &finalized})
+	}
+	return events
 }
 
 // Reset clears parser state.

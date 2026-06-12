@@ -85,10 +85,32 @@ type AuthManager struct {
 	httpClient  *http.Client
 	fingerprint string
 
+	// refreshURLOverride, when non-empty, replaces the computed refresh endpoint.
+	// Test seam only; production leaves it empty.
+	refreshURLOverride string
+
 	// OnRefresh, if set, is invoked (while holding the lock) with the refreshed
 	// credentials whenever a refresh succeeds. Callers use it to persist tokens.
 	OnRefresh func(RefreshResult)
+
+	// RefreshGuard, if set, wraps each actual token refresh+writeback so callers
+	// can serialize it across processes (e.g. a Redis distributed lock for
+	// single-flight refresh). It is invoked while the in-process mutex is held;
+	// it must call the provided refresh closure to perform the HTTP refresh, or
+	// return ErrRefreshLockHeld to signal that another instance is refreshing
+	// (in which case AuthManager reloads credentials via ReloadCreds instead).
+	RefreshGuard func(ctx context.Context, refresh func() error) error
+
+	// ReloadCreds, if set, reloads the latest persisted credentials (e.g. from
+	// the DB) for this account. It is used when RefreshGuard reports the refresh
+	// lock is held by another instance: that instance has likely already written
+	// a fresh token, so AuthManager adopts it rather than refreshing again.
+	ReloadCreds func(ctx context.Context) (Credentials, bool)
 }
+
+// ErrRefreshLockHeld is returned by a RefreshGuard when the distributed refresh
+// lock is held by another instance; AuthManager then reloads credentials.
+var ErrRefreshLockHeld = fmt.Errorf("kiro: refresh lock held by another instance")
 
 // NewAuthManager builds an AuthManager. If httpClient is nil, http.DefaultClient
 // is used. The region defaults to us-east-1 when unset.
@@ -170,7 +192,48 @@ func (a *AuthManager) isExpiringSoonLocked() bool {
 	return time.Now().Add(tokenRefreshThreshold).After(*a.creds.ExpiresAt)
 }
 
+// refreshLocked performs a token refresh under the in-process mutex, optionally
+// serialized across instances by RefreshGuard. When the guard reports the lock
+// is held elsewhere, it adopts freshly persisted credentials via ReloadCreds.
 func (a *AuthManager) refreshLocked(ctx context.Context) error {
+	if a.RefreshGuard == nil {
+		return a.doRefreshLocked(ctx)
+	}
+	err := a.RefreshGuard(ctx, func() error { return a.doRefreshLocked(ctx) })
+	if err == ErrRefreshLockHeld {
+		// Another instance is/was refreshing: adopt its persisted token.
+		if a.ReloadCreds != nil {
+			if creds, ok := a.ReloadCreds(ctx); ok {
+				a.adoptReloadedCredsLocked(creds)
+			}
+		}
+		if a.creds.AccessToken != "" && !a.isExpiringSoonLocked() {
+			return nil
+		}
+		// Reloaded token still stale/missing: fall back to a direct refresh.
+		return a.doRefreshLocked(ctx)
+	}
+	return err
+}
+
+// adoptReloadedCredsLocked merges freshly reloaded token fields into the current
+// credentials without clobbering static config (region/client_id/secret).
+func (a *AuthManager) adoptReloadedCredsLocked(creds Credentials) {
+	if creds.AccessToken != "" {
+		a.creds.AccessToken = creds.AccessToken
+	}
+	if creds.RefreshToken != "" {
+		a.creds.RefreshToken = creds.RefreshToken
+	}
+	if creds.ProfileArn != "" {
+		a.creds.ProfileArn = creds.ProfileArn
+	}
+	if creds.ExpiresAt != nil {
+		a.creds.ExpiresAt = creds.ExpiresAt
+	}
+}
+
+func (a *AuthManager) doRefreshLocked(ctx context.Context) error {
 	if a.creds.AuthType() == AuthAWSSSOOIDC {
 		return a.refreshAWSSSOOIDCLocked(ctx)
 	}
@@ -182,6 +245,9 @@ func (a *AuthManager) refreshKiroDesktopLocked(ctx context.Context) error {
 		return fmt.Errorf("kiro: refresh token is not set")
 	}
 	url := fmt.Sprintf(kiroRefreshURLTemplate, a.creds.SSORegion)
+	if a.refreshURLOverride != "" {
+		url = a.refreshURLOverride
+	}
 	body, _ := json.Marshal(map[string]string{"refreshToken": a.creds.RefreshToken})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
