@@ -11,6 +11,10 @@
 *.md
 !deploy/DOCKER.md
 docs/
+# Legal markdown is imported at build time by the frontend (LegalDocumentView.vue),
+# so it must be available in the build context despite the docs/ and *.md excludes.
+!docs/legal/
+!docs/legal/*.md
 
 # IDE
 .idea/
