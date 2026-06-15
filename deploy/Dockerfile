@@ -28,6 +28,9 @@ RUN pnpm install --frozen-lockfile
 
 # Copy frontend source and build
 COPY frontend/ ./
+# Legal markdown is imported by the frontend at build time via relative paths
+# (../../../../docs/legal/*.md?raw), so it must sit at /app/docs/legal.
+COPY docs/legal /app/docs/legal
 RUN pnpm run build
 
 # -----------------------------------------------------------------------------
