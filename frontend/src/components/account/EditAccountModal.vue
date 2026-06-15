@@ -27,7 +27,7 @@
       </div>
 
       <!-- API Key fields (only for apikey type) -->
-      <div v-if="account.type === 'apikey'" class="space-y-4">
+      <div v-if="account.type === 'apikey' && account.platform !== 'kiro'" class="space-y-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -783,6 +783,115 @@
               <button
                 v-for="preset in presetMappings"
                 :key="preset.label"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Kiro fields (native Kiro / Amazon Q Developer) -->
+      <div v-if="account.platform === 'kiro'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.authMode') }}</label>
+          <div class="mt-2 flex gap-4">
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="editKiroAuthMode" type="radio" value="kiro_desktop" class="text-amber-600" />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.kiro.authModeDesktop') }}</span>
+            </label>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="editKiroAuthMode" type="radio" value="aws_sso_oidc" class="text-amber-600" />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.kiro.authModeSsoOidc') }}</span>
+            </label>
+          </div>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
+          <input
+            v-model="editKiroRefreshToken"
+            type="password"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+          />
+          <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
+          <input v-model="editKiroProfileArn" type="text" class="input font-mono" placeholder="arn:aws:codewhisperer:..." />
+          <p class="input-hint">{{ t('admin.accounts.kiro.profileArnHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+          <input v-model="editKiroRegion" type="text" class="input font-mono" placeholder="us-east-1" />
+          <p class="input-hint">{{ t('admin.accounts.kiro.regionHint') }}</p>
+        </div>
+        <template v-if="editKiroAuthMode === 'aws_sso_oidc'">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+            <input v-model="editKiroClientId" type="text" class="input font-mono" placeholder="client_id" />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+            <input
+              v-model="editKiroClientSecret"
+              type="password"
+              class="input font-mono"
+              :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+            />
+            <p class="input-hint">{{ t('admin.accounts.kiro.ssoOidcHint') }}</p>
+          </div>
+        </template>
+        <!-- Model mapping -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div class="mb-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                  : 'text-gray-600 dark:text-gray-400'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                  : 'text-gray-600 dark:text-gray-400'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector v-model="allowedModels" platform="kiro" />
+          </div>
+          <div v-else class="space-y-2">
+            <div v-for="(mapping, index) in modelMappings" :key="index" class="flex items-center gap-2">
+              <input v-model="mapping.from" type="text" class="input flex-1 font-mono text-sm" placeholder="claude-sonnet-4-5" />
+              <span class="text-gray-400">→</span>
+              <input v-model="mapping.to" type="text" class="input flex-1 font-mono text-sm" placeholder="claude-sonnet-4.5" />
+              <button type="button" class="text-gray-400 hover:text-red-500" @click="removeModelMapping(index)">
+                <Icon name="x" size="sm" />
+              </button>
+            </div>
+            <button type="button" class="text-sm text-amber-600 hover:text-amber-700" @click="addModelMapping">
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+            <div class="flex flex-wrap gap-2 pt-1">
+              <button
+                v-for="preset in kiroPresets"
+                :key="preset.from"
                 type="button"
                 @click="addPresetMapping(preset.from, preset.to)"
                 :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
@@ -2471,6 +2580,14 @@ const editBedrockSessionToken = ref('')
 const editBedrockRegion = ref('')
 const editBedrockForceGlobal = ref(false)
 const editBedrockApiKeyValue = ref('')
+// Kiro credentials (native Kiro / Amazon Q Developer)
+const kiroPresets = computed(() => getPresetMappingsByPlatform('kiro'))
+const editKiroAuthMode = ref<'kiro_desktop' | 'aws_sso_oidc'>('kiro_desktop')
+const editKiroRefreshToken = ref('')
+const editKiroProfileArn = ref('')
+const editKiroRegion = ref('us-east-1')
+const editKiroClientId = ref('')
+const editKiroClientSecret = ref('')
 const editVertexProjectId = ref('')
 const editVertexClientEmail = ref('')
 const editVertexLocation = ref('us-central1')
@@ -3089,8 +3206,18 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   loadTempUnschedRules(credentials)
 
-  // Initialize API Key fields for apikey type
-  if (newAccount.type === 'apikey' && newAccount.credentials) {
+  // Initialize Kiro fields (native Kiro platform; account type is apikey)
+  if (newAccount.platform === 'kiro' && newAccount.credentials) {
+    const kiroCreds = newAccount.credentials as Record<string, unknown>
+    editKiroAuthMode.value = (kiroCreds.client_id && kiroCreds.client_secret) ? 'aws_sso_oidc' : 'kiro_desktop'
+    editKiroProfileArn.value = (kiroCreds.profile_arn as string) || ''
+    editKiroRegion.value = (kiroCreds.region as string) || 'us-east-1'
+    editKiroClientId.value = (kiroCreds.client_id as string) || ''
+    // Secrets are never echoed back; leave empty to keep current values.
+    editKiroRefreshToken.value = ''
+    editKiroClientSecret.value = ''
+    loadModelRestrictionFromMapping(kiroCreds.model_mapping as Record<string, unknown> | undefined)
+  } else if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     const platformDefaultUrl =
       newAccount.platform === 'openai'
@@ -3681,8 +3808,47 @@ const handleSubmit = async () => {
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
 
-    // For apikey type, handle credentials update
-    if (props.account.type === 'apikey') {
+    // For Kiro platform, handle credentials update (stored in credentials map)
+    if (props.account.platform === 'kiro') {
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+
+      if (editKiroRefreshToken.value.trim()) {
+        newCredentials.refresh_token = editKiroRefreshToken.value.trim()
+      }
+      if (editKiroProfileArn.value.trim()) {
+        newCredentials.profile_arn = editKiroProfileArn.value.trim()
+      } else {
+        delete newCredentials.profile_arn
+      }
+      if (editKiroRegion.value.trim()) {
+        newCredentials.region = editKiroRegion.value.trim()
+      } else {
+        delete newCredentials.region
+      }
+      if (editKiroAuthMode.value === 'aws_sso_oidc') {
+        if (editKiroClientId.value.trim()) {
+          newCredentials.client_id = editKiroClientId.value.trim()
+        }
+        if (editKiroClientSecret.value.trim()) {
+          newCredentials.client_secret = editKiroClientSecret.value.trim()
+        }
+      } else {
+        // Switching back to Kiro Desktop: drop AWS SSO OIDC fields.
+        delete newCredentials.client_id
+        delete newCredentials.client_secret
+      }
+
+      const modelMapping = buildModelRestrictionMapping()
+      if (modelMapping) {
+        newCredentials.model_mapping = modelMapping
+      } else {
+        delete newCredentials.model_mapping
+      }
+
+      updatePayload.credentials = newCredentials
+    } else if (props.account.type === 'apikey') {
+      // For apikey type, handle credentials update
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
       const shouldApplyModelMapping = !(props.account.platform === 'openai' && openaiPassthroughEnabled.value)
