@@ -97,6 +97,40 @@ func TestKiroStreamEmitter_InterleavedOrder(t *testing.T) {
 	}
 }
 
+// TestKiroStreamEmitter_DedupToolUse verifies that a repeated tool call with the
+// same toolUseId (e.g. a trailing empty-args duplicate finalized at Flush) is
+// emitted only once — the full-input first occurrence — mirroring kiro-gateway's
+// pre-emit dedup. Regression test for the spurious empty `{}` tool_use block.
+func TestKiroStreamEmitter_DedupToolUse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	em := newKiroStreamEmitter(rec)
+	var text string
+
+	events := []kiro.Event{
+		{Type: "tool_use", Tool: &kiro.ToolCall{ID: "dup1", Name: "Bash", Arguments: `{"command":"echo hi"}`}},
+		{Type: "tool_use", Tool: &kiro.ToolCall{ID: "dup1", Name: "Bash", Arguments: `{}`}},
+	}
+	for _, ev := range events {
+		if err := em.emit(ev, &text); err != nil {
+			t.Fatalf("emit error: %v", err)
+		}
+	}
+	if err := em.close(); err != nil {
+		t.Fatalf("close error: %v", err)
+	}
+
+	if em.toolCount != 1 {
+		t.Fatalf("toolCount = %d, want 1 (duplicate id must be dropped)", em.toolCount)
+	}
+	body := rec.Body.String()
+	if strings.Count(body, `"type":"tool_use"`) != 1 {
+		t.Fatalf("expected exactly one tool_use block; body=\n%s", body)
+	}
+	if !strings.Contains(body, `echo hi`) {
+		t.Fatalf("kept block must be the full-input occurrence; body=\n%s", body)
+	}
+}
+
 func TestKiroTokenCacheKey(t *testing.T) {
 	acc := &Account{}
 	acc.ID = 42

@@ -395,6 +395,7 @@ type kiroStreamEmitter struct {
 	textIndex int
 	toolCount int
 	toolCalls []kiro.ToolCall
+	seenTool  map[string]bool
 }
 
 func newKiroStreamEmitter(w http.ResponseWriter) *kiroStreamEmitter {
@@ -434,6 +435,23 @@ func (e *kiroStreamEmitter) emit(ev kiro.Event, text *string) error {
 		if ev.Tool == nil {
 			return nil
 		}
+		// Dedup: Kiro's text-pattern stream can surface the same tool call twice
+		// (e.g. a trailing in-flight duplicate finalized at Flush with empty args
+		// and the same toolUseId). kiro-gateway dedups before emitting; mirror that
+		// here by id (falling back to name+args when the upstream omits an id) so we
+		// don't emit a spurious second tool_use block. First occurrence wins, which
+		// matches Kiro's ordering where the full-input call arrives before the dup.
+		key := ev.Tool.ID
+		if key == "" {
+			key = ev.Tool.Name + "-" + ev.Tool.Arguments
+		}
+		if e.seenTool == nil {
+			e.seenTool = map[string]bool{}
+		}
+		if e.seenTool[key] {
+			return nil
+		}
+		e.seenTool[key] = true
 		// Close the open text block so the tool block lands in arrival order; a
 		// subsequent text delta will lazily open a fresh text block.
 		if err := e.closeText(); err != nil {
