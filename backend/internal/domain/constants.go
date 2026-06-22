@@ -22,6 +22,7 @@ const (
 	PlatformOpenAI      = "openai"
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
+	PlatformKiro        = "kiro" // 原生 Kiro 平台（Amazon Q Developer / AWS CodeWhisperer）
 )
 
 // Account type constants
@@ -116,6 +117,34 @@ var DefaultAntigravityModelMapping = map[string]string{
 	// 其他官方模型
 	"gpt-oss-120b-medium":    "gpt-oss-120b-medium",
 	"tab_flash_lite_preview": "tab_flash_lite_preview",
+}
+
+// DefaultKiroModelMapping 是原生 Kiro 平台的默认模型映射。
+// 将对外的 Anthropic 标准模型名映射到 Kiro API 接受的 modelId。
+// Kiro 内部模型 id 使用点号版本格式（如 claude-sonnet-4.5）。
+var DefaultKiroModelMapping = map[string]string{
+	// Claude Sonnet
+	"claude-sonnet-4-6":          "claude-sonnet-4.6",
+	"claude-sonnet-4-6-thinking": "claude-sonnet-4.6",
+	"claude-sonnet-4-5":          "claude-sonnet-4.5",
+	"claude-sonnet-4-5-thinking": "claude-sonnet-4.5",
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+	"claude-sonnet-4":            "claude-sonnet-4",
+	"claude-sonnet-4-20250514":   "claude-sonnet-4",
+	// Claude Haiku
+	"claude-haiku-4-5":          "claude-haiku-4.5",
+	"claude-haiku-4-5-20251001": "claude-haiku-4.5",
+	// Claude Opus
+	"claude-opus-4-8": "claude-opus-4.8",
+	"claude-opus-4-7": "claude-opus-4.7",
+	"claude-opus-4-6": "claude-opus-4.6",
+	"claude-opus-4-5": "claude-opus-4.5",
+	// 开源模型（取决于账号 Kiro 等级）
+	"deepseek-v3.2":    "deepseek-3.2",
+	"glm-5":            "glm-5",
+	"minimax-m2.5":     "minimax-m2.5",
+	"minimax-m2.1":     "minimax-m2.1",
+	"qwen3-coder-next": "qwen3-coder-next",
 }
 
 // DefaultBedrockModelMapping 是 AWS Bedrock 平台的默认模型映射

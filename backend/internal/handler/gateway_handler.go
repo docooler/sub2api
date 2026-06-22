@@ -41,6 +41,7 @@ type GatewayHandler struct {
 	gatewayService            *service.GatewayService
 	geminiCompatService       *service.GeminiMessagesCompatService
 	antigravityGatewayService *service.AntigravityGatewayService
+	kiroGatewayService        *service.KiroGatewayService
 	userService               *service.UserService
 	billingCacheService       *service.BillingCacheService
 	usageService              *service.UsageService
@@ -61,6 +62,7 @@ func NewGatewayHandler(
 	gatewayService *service.GatewayService,
 	geminiCompatService *service.GeminiMessagesCompatService,
 	antigravityGatewayService *service.AntigravityGatewayService,
+	kiroGatewayService *service.KiroGatewayService,
 	userService *service.UserService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
@@ -96,6 +98,7 @@ func NewGatewayHandler(
 		gatewayService:            gatewayService,
 		geminiCompatService:       geminiCompatService,
 		antigravityGatewayService: antigravityGatewayService,
+		kiroGatewayService:        kiroGatewayService,
 		userService:               userService,
 		billingCacheService:       billingCacheService,
 		usageService:              usageService,
@@ -773,7 +776,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
-			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
+			if account.Platform == service.PlatformKiro {
+				result, err = h.kiroGatewayService.Forward(requestCtx, c, account, attemptBody)
+			} else if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
 			} else {
 				result, err = h.gatewayService.Forward(requestCtx, c, account, attemptParsedReq)
