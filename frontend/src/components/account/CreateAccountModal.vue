@@ -147,6 +147,19 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="kiro" size="sm" />
+            Kiro
+          </button>
         </div>
       </div>
 
@@ -797,6 +810,142 @@
             placeholder="sk-..."
           />
           <p class="input-hint">{{ t('admin.accounts.upstream.apiKeyHint') }}</p>
+        </div>
+      </div>
+
+      <!-- Kiro credentials (native Kiro / Amazon Q Developer) -->
+      <div v-if="form.platform === 'kiro'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.authMode') }}</label>
+          <div class="mt-2 flex gap-4">
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="kiroAuthMode" type="radio" value="kiro_desktop" class="text-amber-600" />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.kiro.authModeDesktop') }}</span>
+            </label>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="kiroAuthMode" type="radio" value="aws_sso_oidc" class="text-amber-600" />
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.kiro.authModeSsoOidc') }}</span>
+            </label>
+          </div>
+          <p class="input-hint">{{ t('admin.accounts.kiro.authModeHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.refreshToken') }}</label>
+          <input
+            v-model="kiroRefreshToken"
+            type="password"
+            required
+            class="input font-mono"
+            placeholder="ao, eyJ..."
+          />
+          <p class="input-hint">{{ t('admin.accounts.kiro.refreshTokenHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.profileArn') }}</label>
+          <input
+            v-model="kiroProfileArn"
+            type="text"
+            class="input font-mono"
+            placeholder="arn:aws:codewhisperer:us-east-1:..."
+          />
+          <p class="input-hint">{{ t('admin.accounts.kiro.profileArnHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.region') }}</label>
+          <input
+            v-model="kiroRegion"
+            type="text"
+            class="input font-mono"
+            placeholder="us-east-1"
+          />
+          <p class="input-hint">{{ t('admin.accounts.kiro.regionHint') }}</p>
+        </div>
+        <template v-if="kiroAuthMode === 'aws_sso_oidc'">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientId') }}</label>
+            <input
+              v-model="kiroClientId"
+              type="text"
+              class="input font-mono"
+              placeholder="client_id"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.kiro.clientSecret') }}</label>
+            <input
+              v-model="kiroClientSecret"
+              type="password"
+              class="input font-mono"
+              placeholder="client_secret"
+            />
+            <p class="input-hint">{{ t('admin.accounts.kiro.ssoOidcHint') }}</p>
+          </div>
+        </template>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.kiro.accessToken') }}</label>
+          <input
+            v-model="kiroAccessToken"
+            type="password"
+            class="input font-mono"
+            placeholder="(optional)"
+          />
+          <p class="input-hint">{{ t('admin.accounts.kiro.accessTokenHint') }}</p>
+        </div>
+        <!-- Model mapping (mirror backend DefaultKiroModelMapping) -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div class="mb-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'whitelist'"
+              :class="[
+                'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                modelRestrictionMode === 'whitelist'
+                  ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                  : 'text-gray-600 dark:text-gray-400'
+              ]"
+            >
+              {{ t('admin.accounts.modelWhitelist') }}
+            </button>
+            <button
+              type="button"
+              @click="modelRestrictionMode = 'mapping'"
+              :class="[
+                'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all',
+                modelRestrictionMode === 'mapping'
+                  ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                  : 'text-gray-600 dark:text-gray-400'
+              ]"
+            >
+              {{ t('admin.accounts.modelMapping') }}
+            </button>
+          </div>
+          <div v-if="modelRestrictionMode === 'whitelist'">
+            <ModelWhitelistSelector v-model="allowedModels" platform="kiro" :sync-credentials="syncPreviewCredentials" />
+          </div>
+          <div v-else class="space-y-2">
+            <div v-for="(mapping, index) in modelMappings" :key="index" class="flex items-center gap-2">
+              <input v-model="mapping.from" type="text" class="input flex-1 font-mono text-sm" placeholder="claude-sonnet-4-5" />
+              <span class="text-gray-400">→</span>
+              <input v-model="mapping.to" type="text" class="input flex-1 font-mono text-sm" placeholder="claude-sonnet-4.5" />
+              <button type="button" class="text-gray-400 hover:text-red-500" @click="removeModelMapping(index)">
+                <Icon name="x" size="sm" />
+              </button>
+            </div>
+            <button type="button" class="text-sm text-amber-600 hover:text-amber-700" @click="addModelMapping">
+              + {{ t('admin.accounts.addMapping') }}
+            </button>
+            <div class="flex flex-wrap gap-2 pt-1">
+              <button
+                v-for="preset in kiroPresets"
+                :key="preset.from"
+                type="button"
+                @click="addPresetMapping(preset.from, preset.to)"
+                :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+              >
+                + {{ preset.label }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3233,6 +3382,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
+import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -3456,6 +3606,17 @@ const bedrockSessionToken = ref('')
 const bedrockRegion = ref('us-east-1')
 const bedrockForceGlobal = ref(false)
 const bedrockApiKeyValue = ref('')
+
+// Kiro credentials (native Kiro / Amazon Q Developer)
+const kiroPresets = computed(() => getPresetMappingsByPlatform('kiro'))
+const kiroAuthMode = ref<'kiro_desktop' | 'aws_sso_oidc'>('kiro_desktop')
+const kiroRefreshToken = ref('')
+const kiroAccessToken = ref('')
+const kiroProfileArn = ref('')
+const kiroRegion = ref('us-east-1')
+const kiroClientId = ref('')
+const kiroClientSecret = ref('')
+
 const vertexServiceAccountFileInput = ref<HTMLInputElement | null>(null)
 const vertexServiceAccountJson = ref('')
 const vertexProjectId = ref('')
@@ -3706,6 +3867,10 @@ const isOAuthFlow = computed(() => {
   if (form.platform === 'anthropic' && accountCategory.value === 'bedrock') {
     return false
   }
+  // Kiro 平台不需要 OAuth 流程（凭据手动填写）
+  if (form.platform === 'kiro') {
+    return false
+  }
   return accountCategory.value === 'oauth-based'
 })
 
@@ -3772,6 +3937,11 @@ watch(
       form.type = 'apikey'
       return
     }
+    // Kiro 平台：凭据存于 credentials map，账号类型固定为 apikey
+    if (form.platform === 'kiro') {
+      form.type = 'apikey'
+      return
+    }
     // Bedrock 类型
     if (form.platform === 'anthropic' && category === 'bedrock') {
       form.type = 'bedrock' as AccountType
@@ -3831,6 +4001,14 @@ watch(
     bedrockForceGlobal.value = false
     bedrockAuthMode.value = 'sigv4'
     bedrockApiKeyValue.value = ''
+    // Reset Kiro fields when switching platforms
+    kiroAuthMode.value = 'kiro_desktop'
+    kiroRefreshToken.value = ''
+    kiroAccessToken.value = ''
+    kiroProfileArn.value = ''
+    kiroRegion.value = 'us-east-1'
+    kiroClientId.value = ''
+    kiroClientSecret.value = ''
     vertexServiceAccountJson.value = ''
     vertexProjectId.value = ''
     vertexClientEmail.value = ''
@@ -4541,6 +4719,52 @@ const handleSubmit = async () => {
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
 
     await createAccountAndFinish('anthropic', 'bedrock' as AccountType, credentials)
+    return
+  }
+
+  // For Kiro platform, create directly (credentials stored in credentials map)
+  if (form.platform === 'kiro') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!kiroRefreshToken.value.trim()) {
+      appStore.showError(t('admin.accounts.kiro.refreshTokenRequired'))
+      return
+    }
+    if (kiroAuthMode.value === 'aws_sso_oidc' && (!kiroClientId.value.trim() || !kiroClientSecret.value.trim())) {
+      appStore.showError(t('admin.accounts.kiro.ssoOidcCredsRequired'))
+      return
+    }
+
+    const credentials: Record<string, unknown> = {
+      refresh_token: kiroRefreshToken.value.trim(),
+    }
+    if (kiroAccessToken.value.trim()) {
+      credentials.access_token = kiroAccessToken.value.trim()
+    }
+    if (kiroProfileArn.value.trim()) {
+      credentials.profile_arn = kiroProfileArn.value.trim()
+    }
+    if (kiroRegion.value.trim()) {
+      credentials.region = kiroRegion.value.trim()
+    }
+    // AWS SSO OIDC fields only when that auth mode is selected. The backend
+    // auto-detects AWS SSO OIDC by presence of client_id/client_secret.
+    if (kiroAuthMode.value === 'aws_sso_oidc') {
+      credentials.client_id = kiroClientId.value.trim()
+      credentials.client_secret = kiroClientSecret.value.trim()
+    }
+
+    // Model mapping (mirror backend DefaultKiroModelMapping)
+    const modelMapping = buildModelMappingObject(
+      modelRestrictionMode.value, allowedModels.value, modelMappings.value
+    )
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+
+    await createAccountAndFinish('kiro', 'apikey', credentials)
     return
   }
 

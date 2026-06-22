@@ -4,7 +4,7 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -33,6 +33,22 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-2.5-flash-image')
     expect(models).toContain('gemini-3.1-flash-image')
     expect(models).toContain('gemini-3-pro-image')
+  })
+
+  it('kiro 模型列表包含原生 Kiro 模型', () => {
+    const models = getModelsByPlatform('kiro')
+    expect(models).toContain('claude-sonnet-4-5')
+    expect(models).toContain('claude-opus-4-8')
+    expect(models).toContain('claude-haiku-4-5')
+    expect(models).toContain('deepseek-v3.2')
+  })
+
+  it('kiro 预设映射把对外模型名映射到 Kiro 点号版本 modelId', () => {
+    const presets = getPresetMappingsByPlatform('kiro')
+    const sonnet = presets.find((p) => p.from === 'claude-sonnet-4-5')
+    expect(sonnet?.to).toBe('claude-sonnet-4.5')
+    const opus = presets.find((p) => p.from === 'claude-opus-4-8')
+    expect(opus?.to).toBe('claude-opus-4.8')
   })
 
   it('Claude 模型列表包含新发布的 Claude 模型', () => {
