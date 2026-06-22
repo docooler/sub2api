@@ -27,7 +27,11 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# Copy frontend source and build
+# Copy frontend source and build.
+# LegalDocumentView.vue does `?raw` imports of ../../../../docs/legal/*.md, which
+# resolve to /app/docs/legal/ at build time; .dockerignore keeps docs/legal/ in
+# the build context for exactly this reason, so it must be COPY'd in here.
+COPY docs/legal/ /app/docs/legal/
 COPY frontend/ ./
 RUN pnpm run build
 
