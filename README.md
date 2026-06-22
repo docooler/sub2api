@@ -31,6 +31,7 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 ## Features
 
 - **Multi-Account Management** - Support multiple upstream account types (OAuth, API Key)
+- **Native Kiro Support** - First-class [Kiro](#kiro-support) (Amazon Q Developer) platform with self-maintained token refresh, served over both Anthropic Messages and OpenAI Chat Completions APIs
 - **API Key Distribution** - Generate and manage API Keys for users
 - **Precise Billing** - Token-level usage tracking and cost calculation
 - **Smart Scheduling** - Intelligent account selection with sticky sessions
@@ -605,6 +606,37 @@ Antigravity accounts support optional **hybrid scheduling**. When enabled, the g
 In Claude Code, Plan Mode cannot exit automatically. (Normally when using the native Claude API, after planning is complete, Claude Code will pop up options for users to approve or reject the plan.)
 
 **Workaround**: Press `Shift + Tab` to manually exit Plan Mode, then type your response to approve or reject the plan.
+
+---
+
+## Kiro Support
+
+Sub2API supports **native Kiro** accounts (Amazon Q Developer / AWS CodeWhisperer). A Kiro account is created as an `oauth`-type account on the `kiro` platform; the gateway maintains its own token lifecycle (AWS SSO OIDC refresh, write-back to the account credentials, and a cross-instance Redis refresh lock) — **no dependency on kiro-cli or an external proxy at runtime**.
+
+Requests are served through the **standard gateway endpoints** when the API Key's group platform is `kiro` — both protocols are supported:
+
+| Endpoint | Protocol |
+|----------|----------|
+| `/v1/messages` | Anthropic Messages API |
+| `/v1/chat/completions` | OpenAI Chat Completions API (incl. streaming + `tool_calls`) |
+
+### Configuration
+
+```bash
+# Anthropic-style clients (e.g. Claude Code)
+export ANTHROPIC_BASE_URL="http://localhost:8080"
+export ANTHROPIC_AUTH_TOKEN="sk-xxx"   # API Key bound to a kiro-platform group
+
+# OpenAI-style clients
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_API_KEY="sk-xxx"
+```
+
+### Models
+
+Both Claude models (Opus / Sonnet / Haiku 4.x) and third-party models served by Kiro (e.g. DeepSeek, GLM, MiniMax, Qwen) are available.
+
+> **⚠️ Model IDs**: the account's `model_mapping` must map the exposed model IDs to **Kiro's catalog IDs** (e.g. `claude-opus-4-8` → `claude-opus-4.8`, `deepseek-v3.2` → `deepseek-3.2`); otherwise Kiro returns `INVALID_MODEL_ID`.
 
 ---
 
