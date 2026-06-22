@@ -66,13 +66,37 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return nil, fmt.Errorf("kiro: parse request: %w", err)
 	}
 
-	messages, systemPrompt, tools := translateClaudeRequest(&req)
+	_, inputTokens, makeRequest, err := s.prepareUpstream(ctx, account, &req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := makeRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Stream {
+		return s.streamResponse(ctx, c, resp, makeRequest, req.Model, inputTokens, startTime, reqLog)
+	}
+	defer resp.Body.Close()
+	return s.nonStreamResponse(c, resp, req.Model, inputTokens, startTime)
+}
+
+// prepareUpstream 把 Anthropic 请求转成 Kiro 调用参数，并返回一个可重复调用的
+// makeRequest（用于首事件超时重试 / failover）。Forward 与 ForwardAsChatCompletions
+// 共用此逻辑，确保鉴权、模型映射、上游错误（UpstreamFailoverError）语义完全一致。
+// 返回：解析后的上游模型 ID、估算输入 token、makeRequest 闭包。
+func (s *KiroGatewayService) prepareUpstream(ctx context.Context, account *Account, req *antigravity.ClaudeRequest) (string, int, func(context.Context) (*http.Response, error), error) {
+	reqLog := logger.L().With(zap.String("component", "service.kiro.forward"), zap.Int64("account_id", account.ID))
+
+	messages, systemPrompt, tools := translateClaudeRequest(req)
 	modelID := s.resolveModel(account, req.Model)
 	inputTokens := estimateKiroInputTokens(messages, systemPrompt, tools)
 
 	auth, err := s.buildAuthManager(ctx, account)
 	if err != nil {
-		return nil, err
+		return "", 0, nil, err
 	}
 	client := s.buildClient(auth, account)
 
@@ -94,16 +118,7 @@ func (s *KiroGatewayService) Forward(ctx context.Context, c *gin.Context, accoun
 		return resp, nil
 	}
 
-	resp, err := makeRequest(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.Stream {
-		return s.streamResponse(ctx, c, resp, makeRequest, req.Model, inputTokens, startTime, reqLog)
-	}
-	defer resp.Body.Close()
-	return s.nonStreamResponse(c, resp, req.Model, inputTokens, startTime)
+	return modelID, inputTokens, makeRequest, nil
 }
 
 // nonStreamResponse 读取完整流，转换成 Anthropic Messages JSON 响应。

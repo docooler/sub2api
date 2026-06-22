@@ -255,6 +255,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				return
 			}
 			result, err = h.geminiCompatService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody)
+		} else if account.Platform == service.PlatformKiro {
+			result, err = h.kiroGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody)
 		} else {
 			result, err = h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, parsedReq)
 		}
