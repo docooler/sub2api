@@ -329,6 +329,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 		}
 
+		// 把每个流式 chunk 的 model 字段改回对外映射名（见非流式路径同款说明）。
+		if upstreamModel != originalModel {
+			line = rewriteOpenAISSEModel(line, originalModel)
+		}
+
 		writeLine(line)
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
@@ -424,6 +429,27 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 	return &u
 }
 
+// rewriteOpenAISSEModel 把一条 CC SSE data 行内 JSON 的 model 字段改写为 newModel。
+// 非 data 行、[DONE] 哨兵、以及不含 model 字段或已是 newModel 的 chunk 原样返回。
+func rewriteOpenAISSEModel(line, newModel string) string {
+	payload, ok := extractOpenAISSEDataLine(line)
+	if !ok {
+		return line
+	}
+	if strings.TrimSpace(payload) == "[DONE]" {
+		return line
+	}
+	m := gjson.Get(payload, "model")
+	if !m.Exists() || m.String() == newModel {
+		return line
+	}
+	updated, err := sjson.Set(payload, "model", newModel)
+	if err != nil {
+		return line
+	}
+	return "data: " + updated
+}
+
 // bufferRawChatCompletions 透传上游 CC 非流式 JSON 响应。
 func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	c *gin.Context,
@@ -455,6 +481,14 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		if ccResp.Usage.PromptTokensDetails != nil {
 			usage.CacheReadInputTokens = ccResp.Usage.PromptTokensDetails.CachedTokens
 		}
+	}
+
+	// 当 model_mapping 把对外模型名改写成上游真名时，上游响应里的 model 字段是
+	// 上游真名（可能泄露内部标识如 /root/lora160/export）。这里改回客户端请求的
+	// 对外名，保持"对外只暴露映射名"。content-length 已被响应头过滤器剥离，由
+	// ResponseWriter 按实际写入长度重设，故改写 body 长度是安全的。
+	if upstreamModel != originalModel {
+		respBody = ReplaceModelInBody(respBody, originalModel)
 	}
 
 	if s.responseHeaderFilter != nil {
