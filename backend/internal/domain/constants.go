@@ -124,6 +124,8 @@ var DefaultAntigravityModelMapping = map[string]string{
 // Kiro 内部模型 id 使用点号版本格式（如 claude-sonnet-4.5）。
 var DefaultKiroModelMapping = map[string]string{
 	// Claude Sonnet
+	"claude-sonnet-5":            "claude-sonnet-5",
+	"claude-sonnet-5-thinking":   "claude-sonnet-5",
 	"claude-sonnet-4-6":          "claude-sonnet-4.6",
 	"claude-sonnet-4-6-thinking": "claude-sonnet-4.6",
 	"claude-sonnet-4-5":          "claude-sonnet-4.5",
