@@ -79,12 +79,6 @@
           <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('dashboard.todayTokens') }}</p>
           <p class="text-xl font-bold text-gray-900 dark:text-white">{{ formatTokens(stats?.today_tokens || 0) }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('dashboard.input') }}: {{ formatTokens(stats?.today_input_tokens || 0) }} / {{ t('dashboard.output') }}: {{ formatTokens(stats?.today_output_tokens || 0) }}</p>
-          <p class="text-xs text-gray-400 dark:text-gray-500">
-            <span class="text-sky-600 dark:text-sky-400">{{ t('usage.cacheHit') }} {{ formatTokens(stats?.today_cache_read_tokens || 0) }}</span>
-            ·
-            <span class="text-amber-600 dark:text-amber-400">{{ t('usage.cacheCreate') }} {{ formatTokens(stats?.today_cache_creation_tokens || 0) }}</span>
-            · {{ t('usage.cacheHitRate') }} {{ cacheHitRate(stats?.today_input_tokens, stats?.today_cache_creation_tokens, stats?.today_cache_read_tokens) }}
-          </p>
         </div>
       </div>
     </div>
@@ -99,12 +93,6 @@
           <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('dashboard.totalTokens') }}</p>
           <p class="text-xl font-bold text-gray-900 dark:text-white">{{ formatTokens(stats?.total_tokens || 0) }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('dashboard.input') }}: {{ formatTokens(stats?.total_input_tokens || 0) }} / {{ t('dashboard.output') }}: {{ formatTokens(stats?.total_output_tokens || 0) }}</p>
-          <p class="text-xs text-gray-400 dark:text-gray-500">
-            <span class="text-sky-600 dark:text-sky-400">{{ t('usage.cacheHit') }} {{ formatTokens(stats?.total_cache_read_tokens || 0) }}</span>
-            ·
-            <span class="text-amber-600 dark:text-amber-400">{{ t('usage.cacheCreate') }} {{ formatTokens(stats?.total_cache_creation_tokens || 0) }}</span>
-            · {{ t('usage.cacheHitRate') }} {{ cacheHitRate(stats?.total_input_tokens, stats?.total_cache_creation_tokens, stats?.total_cache_read_tokens) }}
-          </p>
         </div>
       </div>
     </div>
@@ -400,11 +388,4 @@ const formatTokens = (t: number) => {
   return t.toString()
 }
 const formatDuration = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(0)}ms`
-
-// 缓存命中率 = 缓存读取 / (普通输入 + 缓存创建 + 缓存读取)；总输入为 0 时显示 '-'
-const cacheHitRate = (input?: number, cacheCreate?: number, cacheRead?: number): string => {
-  const read = cacheRead || 0
-  const total = (input || 0) + (cacheCreate || 0) + read
-  return total > 0 ? `${((read / total) * 100).toFixed(1)}%` : '-'
-}
 </script>

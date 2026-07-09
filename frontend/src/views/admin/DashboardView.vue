@@ -129,26 +129,6 @@
                     >${{ formatCost(stats.today_cost) }}</span
                   >
                 </p>
-                <p class="text-xs text-gray-400 dark:text-gray-500">
-                  <span class="text-sky-600 dark:text-sky-400"
-                    >{{ t('usage.cacheHit') }} {{ formatTokens(stats.today_cache_read_tokens) }}</span
-                  >
-                  <span> · </span>
-                  <span class="text-amber-600 dark:text-amber-400"
-                    >{{ t('usage.cacheCreate') }} {{ formatTokens(stats.today_cache_creation_tokens) }}</span
-                  >
-                  <span> · </span>
-                  <span
-                    >{{ t('usage.cacheHitRate') }}
-                    {{
-                      cacheHitRate(
-                        stats.today_input_tokens,
-                        stats.today_cache_creation_tokens,
-                        stats.today_cache_read_tokens
-                      )
-                    }}</span
-                  >
-                </p>
               </div>
             </div>
           </div>
@@ -183,26 +163,6 @@
                     class="text-gray-400 dark:text-gray-500"
                     :title="t('admin.dashboard.standard')"
                     >${{ formatCost(stats.total_cost) }}</span
-                  >
-                </p>
-                <p class="text-xs text-gray-400 dark:text-gray-500">
-                  <span class="text-sky-600 dark:text-sky-400"
-                    >{{ t('usage.cacheHit') }} {{ formatTokens(stats.total_cache_read_tokens) }}</span
-                  >
-                  <span> · </span>
-                  <span class="text-amber-600 dark:text-amber-400"
-                    >{{ t('usage.cacheCreate') }} {{ formatTokens(stats.total_cache_creation_tokens) }}</span
-                  >
-                  <span> · </span>
-                  <span
-                    >{{ t('usage.cacheHitRate') }}
-                    {{
-                      cacheHitRate(
-                        stats.total_input_tokens,
-                        stats.total_cache_creation_tokens,
-                        stats.total_cache_read_tokens
-                      )
-                    }}</span
                   >
                 </p>
               </div>
@@ -575,18 +535,6 @@ const formatTokens = (value: number | undefined): string => {
 
 const formatNumber = (value: number): string => {
   return value.toLocaleString()
-}
-
-// 缓存命中率 = 缓存读取 / (普通输入 + 缓存创建 + 缓存读取)
-// 总输入为 0 时返回 '-'
-const cacheHitRate = (
-  input: number | undefined,
-  cacheCreate: number | undefined,
-  cacheRead: number | undefined
-): string => {
-  const read = cacheRead || 0
-  const total = (input || 0) + (cacheCreate || 0) + read
-  return total > 0 ? `${((read / total) * 100).toFixed(1)}%` : '-'
 }
 
 const formatCost = (value: number): string => {
