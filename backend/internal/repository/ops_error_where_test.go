@@ -85,10 +85,55 @@ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
 		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
 	}
 
-	// phase=upstream skips the status guard entirely — exemption is irrelevant there.
+	// phase=upstream WITHOUT the recovered-upstream opt-in keeps the status guard:
+	// request-error list endpoints filter by phase=upstream as a plain condition.
 	whereUpstream, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream"})
-	if strings.Contains(whereUpstream, "status_code") {
-		t.Fatalf("upstream phase filter must not add any status_code clause\nfull: %s", whereUpstream)
+	if !strings.Contains(whereUpstream, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the status guard\nfull: %s", whereUpstream)
+	}
+	if !strings.Contains(whereUpstream, "e.error_phase = $") {
+		t.Fatalf("upstream phase filter must emit the error_phase condition\nfull: %s", whereUpstream)
+	}
+
+	// phase=upstream WITH IncludeRecoveredUpstream (ops 上游列表) skips the guard,
+	// exposing recovered (<400) upstream rows.
+	whereRecovered, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream", IncludeRecoveredUpstream: true})
+	if strings.Contains(whereRecovered, "status_code") {
+		t.Fatalf("upstream phase with IncludeRecoveredUpstream must not add any status_code clause\nfull: %s", whereRecovered)
+	}
+
+	// account_auth uses the same explicit provider-health opt-in but remains a
+	// distinct phase from inference upstream errors.
+	whereAccountAuth, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "account_auth", IncludeRecoveredUpstream: true})
+	if strings.Contains(whereAccountAuth, "status_code") {
+		t.Fatalf("account_auth phase with IncludeRecoveredUpstream must expose recovered rows\nfull: %s", whereAccountAuth)
+	}
+	if !strings.Contains(whereAccountAuth, "e.error_phase = $") {
+		t.Fatalf("account_auth recovered filter must retain its explicit phase\nfull: %s", whereAccountAuth)
+	}
+
+	whereProviderHealth, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{
+		ErrorPhasesAny:           []string{"upstream", "account_auth"},
+		IncludeRecoveredUpstream: true,
+	})
+	if strings.Contains(whereProviderHealth, "status_code") {
+		t.Fatalf("provider-health ANY filter must expose recovered inference and credential rows\nfull: %s", whereProviderHealth)
+	}
+	if !strings.Contains(whereProviderHealth, "e.error_phase = ANY($") {
+		t.Fatalf("provider-health filter must preserve distinct phase values\nfull: %s", whereProviderHealth)
+	}
+
+	whereUserAccountAuth, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{ErrorPhasesAny: []string{"account_auth"}})
+	if !strings.Contains(whereUserAccountAuth, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("request-error account_auth filters must exclude recovered successes\nfull: %s", whereUserAccountAuth)
+	}
+
+	whereMixed, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{
+		ErrorPhasesAny:           []string{"account_auth", "request"},
+		IncludeRecoveredUpstream: true,
+	})
+	if !strings.Contains(whereMixed, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("recovered opt-in must not bypass the guard for non-provider phases\nfull: %s", whereMixed)
 	}
 }
 

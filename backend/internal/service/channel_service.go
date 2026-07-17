@@ -645,6 +645,7 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 		{"output_price", p.OutputPrice},
 		{"cache_write_price", p.CacheWritePrice},
 		{"cache_read_price", p.CacheReadPrice},
+		{"image_input_price", p.ImageInputPrice},
 		{"image_output_price", p.ImageOutputPrice},
 		{"per_request_price", p.PerRequestPrice},
 	}
@@ -983,7 +984,8 @@ func detectConflicts(entries []modelEntry, platform, errCode, label string) erro
 		for j := i + 1; j < len(entries); j++ {
 			if conflictsBetween(entries[i], entries[j]) {
 				return infraerrors.BadRequest(errCode,
-					fmt.Sprintf("%s '%s' and '%s' conflict in platform '%s': overlapping match range",
+					fmt.Sprintf("%s '%s' and '%s' conflict in platform '%s': overlapping match range "+
+						"(model names are matched case-insensitively, so an existing entry already covers all case variants)",
 						label, entries[i].pattern, entries[j].pattern, platform))
 			}
 		}

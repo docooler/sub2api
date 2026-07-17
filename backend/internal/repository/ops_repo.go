@@ -160,7 +160,7 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullString(input.ErrorBody),
 		opsNullString(input.ErrorSource),
 		opsNullString(input.ErrorOwner),
-		opsNullInt(input.UpstreamStatusCode),
+		opsNullableIntPointer(input.UpstreamStatusCode),
 		opsNullString(input.UpstreamErrorMessage),
 		opsNullString(input.UpstreamErrorDetail),
 		opsNullString(input.UpstreamErrorsJSON),
@@ -175,6 +175,37 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullString(input.DeletedKeyName),
 		opsNullString(input.APIKeyPrefix),
 	}
+}
+
+// opsErrorLogsOrderBy builds the ORDER BY clause from a whitelist, mirroring
+// usageLogOrderBy semantics. Unknown SortBy falls back to created_at; e.id is
+// always appended as tiebreaker for stable pagination.
+func opsErrorLogsOrderBy(filter *service.OpsErrorLogFilter) string {
+	sortBy := ""
+	sortOrder := ""
+	if filter != nil {
+		sortBy = strings.ToLower(strings.TrimSpace(filter.SortBy))
+		sortOrder = strings.ToLower(strings.TrimSpace(filter.SortOrder))
+	}
+
+	var column string
+	switch sortBy {
+	case "model":
+		column = "COALESCE(NULLIF(TRIM(e.requested_model), ''), e.model)"
+	case "status_code":
+		// 与展示列/过滤保持同义:列表展示 COALESCE(upstream_status_code, status_code, 0),
+		// status_code 过滤也用同一表达式,故排序必须一致——否则 recovered upstream 行
+		//（status_code<400 但展示上游 5xx）排序键与显示值/分页切分不符。
+		column = "COALESCE(e.upstream_status_code, e.status_code, 0)"
+	default:
+		column = "e.created_at"
+	}
+
+	dir := "DESC"
+	if sortOrder == "asc" {
+		dir = "ASC"
+	}
+	return fmt.Sprintf("%s %s, e.id %s", column, dir, dir)
 }
 
 func (r *opsRepository) ListErrorLogs(ctx context.Context, filter *service.OpsErrorLogFilter) (*service.OpsErrorLogList, error) {
@@ -233,25 +264,29 @@ SELECT
   COALESCE(a.name, ''),
   e.group_id,
   COALESCE(g.name, ''),
-  CASE WHEN e.client_ip IS NULL THEN NULL ELSE e.client_ip::text END,
+  CASE WHEN e.client_ip IS NULL THEN NULL ELSE host(e.client_ip) END,
   COALESCE(e.request_path, ''),
   e.stream,
   COALESCE(e.inbound_endpoint, ''),
   COALESCE(e.upstream_endpoint, ''),
   COALESCE(e.requested_model, ''),
   COALESCE(e.upstream_model, ''),
+  COALESCE(e.user_agent, ''),
   e.request_type,
   COALESCE(ak.name, ''),
   ak.deleted_at,
-  COALESCE(e.deleted_key_name, '')
+  COALESCE(e.deleted_key_name, ''),
+  e.deleted_key_owner_user_id,
+  COALESCE(du.email, '')
 FROM ops_error_logs e
 LEFT JOIN accounts a ON e.account_id = a.id
 LEFT JOIN groups g ON e.group_id = g.id
 LEFT JOIN users u ON e.user_id = u.id
 LEFT JOIN users u2 ON e.resolved_by_user_id = u2.id
+LEFT JOIN users du ON e.deleted_key_owner_user_id = du.id
 LEFT JOIN api_keys ak ON ak.id = e.api_key_id
 ` + where + `
-ORDER BY e.created_at DESC
+ORDER BY ` + opsErrorLogsOrderBy(filter) + `
 LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 
 	rows, err := r.db.QueryContext(ctx, selectSQL, argsWithLimit...)
@@ -279,6 +314,8 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 		var apiKeyName string
 		var apiKeyDeletedAt sql.NullTime
 		var deletedKeyName string
+		var deletedKeyOwnerID sql.NullInt64
+		var deletedKeyOwnerEmail string
 		if err := rows.Scan(
 			&item.ID,
 			&item.CreatedAt,
@@ -311,10 +348,13 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 			&item.UpstreamEndpoint,
 			&item.RequestedModel,
 			&item.UpstreamModel,
+			&item.UserAgent,
 			&requestType,
 			&apiKeyName,
 			&apiKeyDeletedAt,
 			&deletedKeyName,
+			&deletedKeyOwnerID,
+			&deletedKeyOwnerEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -364,6 +404,12 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 		}
 		// 已删除：ak.deleted_at 非空（软删），或仅命中 deleted_key_name 兜底。
 		item.APIKeyDeleted = apiKeyDeletedAt.Valid || (apiKeyName == "" && deletedKeyName != "")
+		// 已删除 KEY 所有者快照:认证失败行 user_id 为空,列表用户列以此回退。
+		if deletedKeyOwnerID.Valid {
+			v := deletedKeyOwnerID.Int64
+			item.DeletedKeyOwnerUserID = &v
+			item.DeletedKeyOwnerEmail = deletedKeyOwnerEmail
+		}
 		out = append(out, &item)
 	}
 	if err := rows.Err(); err != nil {
@@ -417,7 +463,7 @@ SELECT
   COALESCE(a.name, ''),
   e.group_id,
   COALESCE(g.name, ''),
-  CASE WHEN e.client_ip IS NULL THEN NULL ELSE e.client_ip::text END,
+  CASE WHEN e.client_ip IS NULL THEN NULL ELSE host(e.client_ip) END,
   COALESCE(e.request_path, ''),
   e.stream,
   COALESCE(e.inbound_endpoint, ''),
@@ -536,7 +582,7 @@ LIMIT 1`
 		s := clientIP.String
 		out.ClientIP = &s
 	}
-	if upstreamStatusCode.Valid && upstreamStatusCode.Int64 > 0 {
+	if upstreamStatusCode.Valid {
 		v := int(upstreamStatusCode.Int64)
 		out.UpstreamStatusCode = &v
 	}
@@ -672,12 +718,14 @@ func (r *opsRepository) BatchInsertSystemLogs(ctx context.Context, inputs []*ser
 	stmt, err := tx.PrepareContext(ctx, pq.CopyIn(
 		"ops_system_logs",
 		"created_at",
+		"host",
 		"level",
 		"component",
 		"message",
 		"request_id",
 		"client_request_id",
 		"user_id",
+		"api_key_id",
 		"account_id",
 		"platform",
 		"model",
@@ -713,12 +761,14 @@ func (r *opsRepository) BatchInsertSystemLogs(ctx context.Context, inputs []*ser
 		if _, err := stmt.ExecContext(
 			ctx,
 			createdAt.UTC(),
+			opsNullString(input.Host),
 			level,
 			component,
 			message,
 			opsNullString(input.RequestID),
 			opsNullString(input.ClientRequestID),
 			opsNullInt64(input.UserID),
+			opsNullInt64(input.APIKeyID),
 			opsNullInt64(input.AccountID),
 			opsNullString(input.Platform),
 			opsNullString(input.Model),
@@ -779,12 +829,14 @@ func (r *opsRepository) ListSystemLogs(ctx context.Context, filter *service.OpsS
 SELECT
   l.id,
   l.created_at,
+  COALESCE(l.host, ''),
   l.level,
   COALESCE(l.component, ''),
   COALESCE(l.message, ''),
   COALESCE(l.request_id, ''),
   COALESCE(l.client_request_id, ''),
   l.user_id,
+  l.api_key_id,
   l.account_id,
   COALESCE(l.platform, ''),
   COALESCE(l.model, ''),
@@ -804,17 +856,20 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 	for rows.Next() {
 		item := &service.OpsSystemLog{}
 		var userID sql.NullInt64
+		var apiKeyID sql.NullInt64
 		var accountID sql.NullInt64
 		var extraRaw string
 		if err := rows.Scan(
 			&item.ID,
 			&item.CreatedAt,
+			&item.Host,
 			&item.Level,
 			&item.Component,
 			&item.Message,
 			&item.RequestID,
 			&item.ClientRequestID,
 			&userID,
+			&apiKeyID,
 			&accountID,
 			&item.Platform,
 			&item.Model,
@@ -825,6 +880,10 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 		if userID.Valid {
 			v := userID.Int64
 			item.UserID = &v
+		}
+		if apiKeyID.Valid {
+			v := apiKeyID.Int64
+			item.APIKeyID = &v
 		}
 		if accountID.Valid {
 			v := accountID.Int64
@@ -918,12 +977,14 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	if filter != nil {
 		resolvedFilter = filter.Resolved
 	}
-	// Keep list endpoints scoped to client errors unless explicitly filtering upstream phase.
+	// Keep list endpoints scoped to client errors unless the caller explicitly opts
+	// into recovered provider-health rows (upstream/account_auth). Request-error
+	// endpoints never set the opt-in and retain this guard.
 	// cyber_policy is exempt from the status >= 400 guard: streaming cyber hits arrive with
 	// status 200 (the SSE stream opened successfully before upstream returned response.failed),
 	// but they are always client-visible blocked requests that belong in admin + user error
 	// lists.  Without the exemption the entire streaming-path cyber sink would be invisible.
-	if phaseFilter != "upstream" {
+	if !opsFilterIncludesRecoveredProviderRows(filter, phaseFilter) {
 		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
 	}
 
@@ -1056,6 +1117,28 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
 
+func opsFilterIncludesRecoveredProviderRows(filter *service.OpsErrorLogFilter, phaseFilter string) bool {
+	if filter == nil || !filter.IncludeRecoveredUpstream {
+		return false
+	}
+	if phaseFilter != "" {
+		return phaseFilter == "upstream" || phaseFilter == "account_auth"
+	}
+	if len(filter.ErrorPhasesAny) == 0 {
+		return false
+	}
+	sawProviderPhase := false
+	for _, rawPhase := range filter.ErrorPhasesAny {
+		switch strings.TrimSpace(strings.ToLower(rawPhase)) {
+		case "upstream", "account_auth":
+			sawProviderPhase = true
+		default:
+			return false
+		}
+	}
+	return sawProviderPhase
+}
+
 func buildOpsSystemLogsWhere(filter *service.OpsSystemLogFilter) (string, []any, bool) {
 	clauses := make([]string, 0, 10)
 	args := make([]any, 0, 10)
@@ -1073,6 +1156,11 @@ func buildOpsSystemLogsWhere(filter *service.OpsSystemLogFilter) (string, []any,
 		hasConstraint = true
 	}
 	if filter != nil {
+		if v := strings.TrimSpace(filter.Host); v != "" {
+			args = append(args, v)
+			clauses = append(clauses, "l.host = $"+itoa(len(args)))
+			hasConstraint = true
+		}
 		if v := strings.ToLower(strings.TrimSpace(filter.Level)); v != "" {
 			args = append(args, v)
 			clauses = append(clauses, "LOWER(COALESCE(l.level,'')) = $"+itoa(len(args)))
@@ -1096,6 +1184,11 @@ func buildOpsSystemLogsWhere(filter *service.OpsSystemLogFilter) (string, []any,
 		if filter.UserID != nil && *filter.UserID > 0 {
 			args = append(args, *filter.UserID)
 			clauses = append(clauses, "l.user_id = $"+itoa(len(args)))
+			hasConstraint = true
+		}
+		if filter.APIKeyID != nil && *filter.APIKeyID > 0 {
+			args = append(args, *filter.APIKeyID)
+			clauses = append(clauses, "l.api_key_id = $"+itoa(len(args)))
 			hasConstraint = true
 		}
 		if filter.AccountID != nil && *filter.AccountID > 0 {
@@ -1132,11 +1225,13 @@ func buildOpsSystemLogsCleanupWhere(filter *service.OpsSystemLogCleanupFilter) (
 	listFilter := &service.OpsSystemLogFilter{
 		StartTime:       filter.StartTime,
 		EndTime:         filter.EndTime,
+		Host:            filter.Host,
 		Level:           filter.Level,
 		Component:       filter.Component,
 		RequestID:       filter.RequestID,
 		ClientRequestID: filter.ClientRequestID,
 		UserID:          filter.UserID,
+		APIKeyID:        filter.APIKeyID,
 		AccountID:       filter.AccountID,
 		Platform:        filter.Platform,
 		Model:           filter.Model,
@@ -1194,6 +1289,16 @@ func opsNullInt(v any) any {
 	default:
 		return sql.NullInt64{}
 	}
+}
+
+// opsNullableIntPointer distinguishes an absent value from an explicitly
+// observed zero. Credential-stage failures intentionally persist upstream
+// status 0 because no inference request was sent.
+func opsNullableIntPointer(v *int) any {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*v), Valid: true}
 }
 
 func opsNullInt16(v *int16) any {

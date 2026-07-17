@@ -194,12 +194,14 @@ type OpsInsertSystemMetricsInput struct {
 
 type OpsInsertSystemLogInput struct {
 	CreatedAt       time.Time
+	Host            string
 	Level           string
 	Component       string
 	Message         string
 	RequestID       string
 	ClientRequestID string
 	UserID          *int64
+	APIKeyID        *int64
 	AccountID       *int64
 	Platform        string
 	Model           string
@@ -209,6 +211,7 @@ type OpsInsertSystemLogInput struct {
 type OpsSystemLogFilter struct {
 	StartTime *time.Time
 	EndTime   *time.Time
+	Host      string
 
 	Level     string
 	Component string
@@ -216,6 +219,7 @@ type OpsSystemLogFilter struct {
 	RequestID       string
 	ClientRequestID string
 	UserID          *int64
+	APIKeyID        *int64
 	AccountID       *int64
 	Platform        string
 	Model           string
@@ -228,6 +232,7 @@ type OpsSystemLogFilter struct {
 type OpsSystemLogCleanupFilter struct {
 	StartTime *time.Time
 	EndTime   *time.Time
+	Host      string
 
 	Level     string
 	Component string
@@ -235,6 +240,7 @@ type OpsSystemLogCleanupFilter struct {
 	RequestID       string
 	ClientRequestID string
 	UserID          *int64
+	APIKeyID        *int64
 	AccountID       *int64
 	Platform        string
 	Model           string

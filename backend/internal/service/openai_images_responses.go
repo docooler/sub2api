@@ -565,12 +565,14 @@ func collectOpenAIImagesFromResponsesBody(body []byte) ([]openAIResponsesImageRe
 		return nil, 0, nil, openAIResponsesImageResult{}, false, collectErr
 	}
 	if len(finalResults) > 0 {
+		reconcileOpenAIResponsesImageResultSizes(finalResults, &finalMeta)
 		return finalResults, createdAt, usageRaw, finalMeta, true, nil
 	}
 
 	if len(fallbackResults) > 0 {
 		firstMeta := fallbackResults[0]
 		mergeOpenAIResponsesImageMeta(&firstMeta, responseMeta)
+		reconcileOpenAIResponsesImageResultSizes(fallbackResults, &firstMeta)
 		return fallbackResults, createdAt, usageRaw, firstMeta, foundFinal, nil
 	}
 	return nil, createdAt, usageRaw, openAIResponsesImageResult{}, foundFinal, nil
@@ -605,6 +607,62 @@ func openAIImagesUpstreamErrorFromSSEPayload(payload []byte) *OpenAIImagesUpstre
 	default:
 		return nil
 	}
+}
+
+// extractOpenAIImagesModelRefusal 从上游 SSE 响应体提取「模型未出图、改用文字拒绝」
+// 的拒绝文本（内容审核场景）。
+//
+// 上游 response.completed 无图时，模型常以 output_text / message 形式输出拒绝说明
+// （如“被安全系统判定为不适合生成”）。这类失败是内容策略拦截，重试/换账号均无效，
+// 应把该文本作为内容策略错误透传给客户端。返回空串表示无文字输出（真空响应）。
+func extractOpenAIImagesModelRefusal(body []byte) string {
+	var b strings.Builder
+	collect := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			if b.Len() > 0 {
+				_ = b.WriteByte(' ')
+			}
+			_, _ = b.WriteString(s)
+		}
+	}
+	forEachOpenAISSEDataPayload(string(body), func(payload []byte) {
+		if !gjson.ValidBytes(payload) {
+			return
+		}
+		switch gjson.GetBytes(payload, "type").String() {
+		case "response.output_text.delta":
+			// 流式文本增量。
+			collect(gjson.GetBytes(payload, "delta").String())
+		case "response.completed", "response.output_item.done":
+			// 终态里的 message/output_text。
+			gjson.GetBytes(payload, "response.output").ForEach(func(_, item gjson.Result) bool {
+				if item.Get("type").String() == "message" {
+					item.Get("content").ForEach(func(_, part gjson.Result) bool {
+						if part.Get("type").String() == "output_text" {
+							collect(part.Get("text").String())
+						}
+						return true
+					})
+				}
+				return true
+			})
+			if item := gjson.GetBytes(payload, "item"); item.Get("type").String() == "message" {
+				item.Get("content").ForEach(func(_, part gjson.Result) bool {
+					if part.Get("type").String() == "output_text" {
+						collect(part.Get("text").String())
+					}
+					return true
+				})
+			}
+		}
+	})
+	refusal := strings.TrimSpace(b.String())
+	// 截断过长文本，避免把整段模型输出塞进错误响应。
+	const maxRefusal = 600
+	if len(refusal) > maxRefusal {
+		refusal = refusal[:maxRefusal]
+	}
+	return refusal
 }
 
 // summarizeOpenAIImagesNoOutputBody 从上游 SSE 响应体提取诊断摘要，用于软失败时
@@ -954,9 +1012,13 @@ func buildOpenAIImagesStreamErrorBodyFromUpstream(err *OpenAIImagesUpstreamError
 }
 
 func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUpstreamError) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() || err == nil {
+	if c == nil || c.Writer == nil || err == nil {
 		return false
 	}
+	if c.Writer.Written() && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) >= 0 {
+		return false
+	}
+	StopOpenAIImagesJSONKeepaliveCommitted(c)
 	errorObj := gin.H{
 		"type":    err.clientErrorType(),
 		"message": err.clientMessage(),
@@ -1010,6 +1072,165 @@ func (s *OpenAIGatewayService) tryWriteOpenAIImagesStreamEvent(
 	return true
 }
 
+func (s *OpenAIGatewayService) parseOpenAIImagesSSEUsageBytes(data []byte, usage *OpenAIUsage) {
+	s.parseSSEUsageBytes(data, usage)
+	if usage == nil || !gjson.ValidBytes(data) || gjson.GetBytes(data, "type").String() != "response.completed" {
+		return
+	}
+	if toolUsage, ok := openAIImagesToolUsageFromGJSON(gjson.GetBytes(data, "response.tool_usage.image_gen")); ok {
+		*usage = toolUsage
+	}
+}
+
+func openAIImagesToolUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+	if !value.Exists() || !value.IsObject() {
+		return OpenAIUsage{}, false
+	}
+	inputTokens, inputOK := boundedJSONNonNegativeInt(value.Get("input_tokens"))
+	outputTokens, outputOK := boundedJSONNonNegativeInt(value.Get("output_tokens"))
+	imageOutputTokens, imageOutputOK := boundedJSONNonNegativeInt(value.Get("output_tokens_details.image_tokens"))
+	if !inputOK || !outputOK || !imageOutputOK {
+		return OpenAIUsage{}, false
+	}
+	return OpenAIUsage{
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		ImageOutputTokens: imageOutputTokens,
+	}, true
+}
+
+// boundedJSONNonNegativeInt parses integral JSON exponent notation without
+// invoking an arbitrary-precision parser on an upstream-controlled exponent.
+func boundedJSONNonNegativeInt(value gjson.Result) (int, bool) {
+	if !value.Exists() || value.Type != gjson.Number {
+		return 0, false
+	}
+	raw := value.Raw
+	if len(raw) == 0 || len(raw) > 64 || raw[0] == '-' {
+		return 0, false
+	}
+
+	mantissaEnd := len(raw)
+	for i, c := range raw {
+		if c != 'e' && c != 'E' {
+			continue
+		}
+		mantissaEnd = i
+		break
+	}
+
+	digits := raw[:mantissaEnd]
+	fractionDigits := 0
+	digitCount := 0
+	dotSeen := false
+	mantissaIsZero := true
+	for _, c := range digits {
+		switch {
+		case c == '.' && !dotSeen:
+			dotSeen = true
+		case c >= '0' && c <= '9':
+			digitCount++
+			mantissaIsZero = mantissaIsZero && c == '0'
+			if dotSeen {
+				fractionDigits++
+			}
+		default:
+			return 0, false
+		}
+	}
+
+	exponent := 0
+	if mantissaEnd < len(raw) {
+		exponentRaw := raw[mantissaEnd+1:]
+		negative := false
+		if len(exponentRaw) > 0 && (exponentRaw[0] == '+' || exponentRaw[0] == '-') {
+			negative = exponentRaw[0] == '-'
+			exponentRaw = exponentRaw[1:]
+		}
+		if len(exponentRaw) == 0 {
+			return 0, false
+		}
+		for len(exponentRaw) > 1 && exponentRaw[0] == '0' {
+			exponentRaw = exponentRaw[1:]
+		}
+		for _, digit := range exponentRaw {
+			if digit < '0' || digit > '9' {
+				return 0, false
+			}
+		}
+		if mantissaIsZero {
+			return 0, true
+		}
+		if len(exponentRaw) > 3 {
+			return 0, false
+		}
+		for _, digit := range exponentRaw {
+			exponent = exponent*10 + int(digit-'0')
+		}
+		if exponent > 100 {
+			return 0, false
+		}
+		if negative {
+			exponent = -exponent
+		}
+	}
+
+	trailingZeros := exponent - fractionDigits
+	scaleReduction := 0
+	if trailingZeros < 0 {
+		scaleReduction = -trailingZeros
+		remaining := scaleReduction
+		allZeros := true
+		for i := len(digits) - 1; i >= 0; i-- {
+			if digits[i] == '.' {
+				continue
+			}
+			if digits[i] != '0' {
+				allZeros = false
+				if remaining > 0 {
+					return 0, false
+				}
+			}
+			if remaining > 0 {
+				remaining--
+			}
+		}
+		if remaining > 0 {
+			if allZeros {
+				return 0, true
+			}
+			return 0, false
+		}
+	}
+
+	maxInt := int(^uint(0) >> 1)
+	parsed := 0
+	digitsToAccumulate := digitCount - scaleReduction
+	for _, c := range digits {
+		if c == '.' {
+			continue
+		}
+		if digitsToAccumulate <= 0 {
+			break
+		}
+		if parsed > (maxInt-int(c-'0'))/10 {
+			return 0, false
+		}
+		parsed = parsed*10 + int(c-'0')
+		digitsToAccumulate--
+	}
+	if trailingZeros < 0 {
+		return parsed, true
+	}
+	for ; trailingZeros > 0; trailingZeros-- {
+		if parsed > maxInt/10 {
+			return 0, false
+		}
+		parsed *= 10
+	}
+	return parsed, true
+}
+
 func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
@@ -1023,7 +1244,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 
 	var usage OpenAIUsage
 	forEachOpenAISSEDataPayload(string(body), func(data []byte) {
-		s.parseSSEUsageBytes(data, &usage)
+		s.parseOpenAIImagesSSEUsageBytes(data, &usage)
 	})
 	results, createdAt, usageRaw, firstMeta, _, err := collectOpenAIImagesFromResponsesBody(body)
 	if err != nil {
@@ -1037,14 +1258,31 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 			}
 			return OpenAIUsage{}, 0, nil, upstreamErr
 		}
-		// 软失败兜底：上游既无图、又无任何可识别的 error/failed/incomplete 事件
-		// （实测：上游偶发把请求路由到 gpt-5.x-mini，返回 response.completed 但 output 为空、
-		// image_gen 工具未执行）。这是上游的概率性失败——同账号有时成功有时失败。
-		// 处理：① 记录上游诊断摘要到 ops（last_event/status/model/body 片段）便于排查；
-		// ② 返回 UpstreamFailoverError 触发重试。因实测为「同账号概率性失败」，优先
-		//    RetryableOnSameAccount 同账号快速重试（默认 3 次，大概率某次正常出图），
-		//    用尽后由 handler 自然换账号 failover（switchCount 上限保护），既提高成功率
-		//    又不无谓消耗其他账号配额。
+		// 软失败兜底：上游无图。先区分两种情形（实测真因，见下）：
+		//
+		// (A) 内容审核拒绝：模型未出图，但输出了文字拒绝（response.completed 里带
+		//     output_text / message，内容如“被安全系统判定为不适合生成”）。这是用户
+		//     prompt 触发 OpenAI 内容策略，模型主动拒绝改用文字回应。**换账号/重试均无效**
+		//     （内容层拦截，与账号/承载模型无关），应把拒绝理由作为 400 透传给客户端，
+		//     避免无谓地重试 + 消耗其它账号配额，且让客户端拿到可读的拒绝原因。
+		// (B) 真空响应：既无图也无任何文字输出（罕见，如偶发路由到 gpt-5.x-mini、
+		//     image_gen 工具未执行）。这是上游的概率性失败，此时才按可重试处理。
+		if refusal := extractOpenAIImagesModelRefusal(body); refusal != "" {
+			refusalErr := &OpenAIImagesUpstreamError{
+				StatusCode: http.StatusBadRequest,
+				ErrorType:  "image_generation_user_error",
+				Code:       "content_policy_violation",
+				Message:    sanitizeUpstreamErrorMessage(refusal),
+			}
+			setOpsUpstreamError(c, http.StatusBadRequest, refusalErr.clientMessage(), summarizeOpenAIImagesNoOutputBody(body))
+			writeOpenAIImagesUpstreamErrorResponse(c, refusalErr)
+			return OpenAIUsage{}, 0, nil, refusalErr
+		}
+		// (B) 真空响应：记录上游诊断摘要到 ops（last_event/status/model/body 片段）便于
+		// 排查，并返回 UpstreamFailoverError 触发重试。因实测为「同账号概率性失败」，优先
+		// RetryableOnSameAccount 同账号快速重试（默认 3 次，大概率某次正常出图），用尽后
+		// 由 handler 自然换账号 failover（switchCount 上限保护），既提高成功率又不无谓
+		// 消耗其它账号配额。
 		setOpsUpstreamError(c, http.StatusBadGateway, "upstream did not return image output", summarizeOpenAIImagesNoOutputBody(body))
 		return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
@@ -1103,7 +1341,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	var sseData openAISSEDataAccumulator
 	var processDataErr error
 	processDataDone := false
-	writerSizeBeforeResponse := c.Writer.Size()
+	writerSizeBeforeResponse := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 
 	processData := func(dataBytes []byte) {
 		if processDataDone || processDataErr != nil {
@@ -1113,7 +1351,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
-		s.parseSSEUsageBytes(dataBytes, &usage)
+		s.parseOpenAIImagesSSEUsageBytes(dataBytes, &usage)
 		if !gjson.ValidBytes(dataBytes) {
 			return
 		}
@@ -1185,6 +1423,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				mergeOpenAIResponsesImageMeta(&img, streamMeta)
 				appendOpenAIResponsesImageResultDedup(&finalResults, finalSeen, "", img)
 			}
+			reconcileOpenAIResponsesImageResultSizes(finalResults, nil)
 			if len(finalResults) == 0 {
 				outputErr := fmt.Errorf("upstream did not return image output")
 				// 软失败：response.completed 事件里没有图片。记录上游诊断摘要到 ops，
@@ -1247,8 +1486,12 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 		}
 		if len(pendingResults) > 0 {
 			eventName := streamPrefix + ".completed"
-			for _, img := range pendingResults {
-				mergeOpenAIResponsesImageMeta(&img, streamMeta)
+			finalResults := append([]openAIResponsesImageResult(nil), pendingResults...)
+			for i := range finalResults {
+				mergeOpenAIResponsesImageMeta(&finalResults[i], streamMeta)
+			}
+			reconcileOpenAIResponsesImageResultSizes(finalResults, nil)
+			for _, img := range finalResults {
 				key := openAIResponsesImageResultKey("", img)
 				if _, exists := emitted[key]; exists {
 					continue
@@ -1258,7 +1501,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload)
 			}
 			imageCount = len(emitted)
-			imageOutputSizes = openAIResponsesImageResultSizes(pendingResults)
+			imageOutputSizes = openAIResponsesImageResultSizes(finalResults)
 			return nil
 		}
 
@@ -1487,6 +1730,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
+		respBody = s.redactAgentIdentitySensitiveBody(upstreamCtx, account, respBody)
+		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", err)
+			}
+			return s.forwardOpenAIImagesOAuth(markAgentIdentityTaskRecoveryTried(ctx), c, account, parsed, channelMappedModel)
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1518,7 +1769,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		imageOutputSizes []string
 		firstTokenMs     *int
 	)
-	writerSizeBeforeResponse := c.Writer.Size()
+	// 与 handleOpenAIImagesOAuthResponseError 的比较端同口径：排除非流式 JSON
+	// keepalive 心跳字节，避免 failover 第 2 轮起把上一轮心跳残留误判为已写响应。
+	writerSizeBeforeResponse := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 	if parsed.Stream {
 		usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), requestModel)
 		if err != nil {
@@ -1599,7 +1852,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthResponseError(
 	}
 
 	retryable := IsOpenAIImagesRetryableUpstreamError(upstreamErr)
-	responseWritten := c != nil && c.Writer != nil && c.Writer.Size() != writerSizeBeforeResponse
+	responseWritten := c != nil && c.Writer != nil && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeResponse
 	kind := "http_error"
 	if retryable {
 		kind = "failover"

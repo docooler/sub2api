@@ -222,6 +222,33 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 		entry.ErrorType = "api_error"
 	}
 
+	// Credential acquisition is a gateway/account-auth stage, not an inference
+	// HTTP attempt. Enforce that ownership at the persistence boundary so an
+	// earlier inference attempt cannot leak its status or text into top-level
+	// auth fields even if a caller supplied stale single-value context.
+	for i := len(entry.UpstreamErrors) - 1; i >= 0; i-- {
+		last := entry.UpstreamErrors[i]
+		if last == nil {
+			continue
+		}
+		if last.Stage == string(GatewayFailureStageAccountAuth) {
+			entry.ErrorPhase = string(GatewayFailureStageAccountAuth)
+			entry.ErrorOwner = "provider"
+			entry.ErrorSource = "gateway"
+			code := 0
+			entry.UpstreamStatusCode = &code
+			entry.UpstreamErrorMessage = nil
+			if message := strings.TrimSpace(last.Message); message != "" {
+				entry.UpstreamErrorMessage = &message
+			}
+			entry.UpstreamErrorDetail = nil
+			if detail := strings.TrimSpace(last.Detail); detail != "" {
+				entry.UpstreamErrorDetail = &detail
+			}
+		}
+		break
+	}
+
 	// Sanitize + truncate error_body to avoid storing sensitive data.
 	if strings.TrimSpace(entry.ErrorBody) != "" {
 		sanitized, _ := sanitizeErrorBodyForStorage(entry.ErrorBody, opsMaxStoredErrorBodyBytes)
@@ -229,7 +256,7 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 
 	// Sanitize upstream error context if provided by gateway services.
-	if entry.UpstreamStatusCode != nil && *entry.UpstreamStatusCode <= 0 {
+	if entry.UpstreamStatusCode != nil && *entry.UpstreamStatusCode <= 0 && entry.ErrorPhase != string(GatewayFailureStageAccountAuth) {
 		entry.UpstreamStatusCode = nil
 	}
 	if entry.UpstreamErrorMessage != nil {
@@ -359,10 +386,12 @@ func (s *OpsService) ListUserErrorRequests(ctx context.Context, userID int64, fi
 	filter.UserQuery = ""
 	filter.Owner = ""
 	filter.Source = ""
-	// 清空 Phase 是防御:Phase 是单值特殊字段,仅当其 == "upstream" 时 buildOpsErrorLogsWhere 才跳过 status>=400 子句。
-	// 用户端一律改走 category→ErrorPhasesAny/ErrorTypesAny(纯 ANY 过滤,不影响 status>=400 子句),
-	// 因此 recovered upstream(error_phase='upstream' 但 status<400,最终成功返回)记录对用户不可见——符合预期。
+	// 清空 Phase 是防御:用户端一律改走 category→ErrorPhasesAny/ErrorTypesAny
+	//（纯 ANY 过滤,不影响 status>=400 子句）。守卫豁免现在还需要
+	// IncludeRecoveredUpstream(用户端永不设置),recovered upstream
+	//（error_phase='upstream' 但 status<400,最终成功返回）记录对用户不可见——符合预期。
 	filter.Phase = ""
+	filter.IncludeRecoveredUpstream = false
 
 	list, err := s.opsRepo.ListErrorLogs(ctx, filter)
 	if err != nil {

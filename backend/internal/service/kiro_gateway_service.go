@@ -611,7 +611,7 @@ func (s *KiroGatewayService) buildAuthManager(ctx context.Context, account *Acco
 	repo := s.accountRepo
 	acc := account
 	auth.OnRefresh = func(r kiro.RefreshResult) {
-		newCreds := cloneCredentials(acc.Credentials)
+		newCreds := shallowCopyMap(acc.Credentials)
 		newCreds[kiroCredAccessToken] = r.AccessToken
 		if r.RefreshToken != "" {
 			newCreds[kiroCredRefreshToken] = r.RefreshToken
