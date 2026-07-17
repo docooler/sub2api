@@ -147,6 +147,14 @@ var DefaultKiroModelMapping = map[string]string{
 	"claude-opus-4-7": "claude-opus-4.7",
 	"claude-opus-4-6": "claude-opus-4.6",
 	"claude-opus-4-5": "claude-opus-4.5",
+	// OpenAI GPT-5.6（Kiro 2026-07-14 上线的 Sol/Terra/Luna 三档，无 thinking 变体）
+	"gpt-5.6-sol":   "gpt-5.6-sol",
+	"gpt-5.6-terra": "gpt-5.6-terra",
+	"gpt-5.6-luna":  "gpt-5.6-luna",
+	// 全横线别名（部分客户端不接受点号）
+	"gpt-5-6-sol":   "gpt-5.6-sol",
+	"gpt-5-6-terra": "gpt-5.6-terra",
+	"gpt-5-6-luna":  "gpt-5.6-luna",
 	// 开源模型（取决于账号 Kiro 等级）
 	"deepseek-v3.2":    "deepseek-3.2",
 	"glm-5":            "glm-5",

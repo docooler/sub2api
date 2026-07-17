@@ -52,7 +52,7 @@ const (
 // Streaming first-token wait/retry tuning, mirroring kiro-gateway config.py
 // (FIRST_TOKEN_TIMEOUT / FIRST_TOKEN_MAX_RETRIES).
 const (
-	kiroFirstTokenTimeout    = 15 * time.Second
+	kiroFirstTokenTimeout    = 60 * time.Second
 	kiroFirstTokenMaxRetries = 3
 )
 
