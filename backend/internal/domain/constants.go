@@ -142,11 +142,13 @@ var DefaultKiroModelMapping = map[string]string{
 	// Claude Haiku
 	"claude-haiku-4-5":          "claude-haiku-4.5",
 	"claude-haiku-4-5-20251001": "claude-haiku-4.5",
-	// Claude Opus
-	"claude-opus-4-8": "claude-opus-4.8",
-	"claude-opus-4-7": "claude-opus-4.7",
-	"claude-opus-4-6": "claude-opus-4.6",
-	"claude-opus-4-5": "claude-opus-4.5",
+	// Claude Opus（5 与 sonnet-5 一样无点号）
+	"claude-opus-5":          "claude-opus-5",
+	"claude-opus-5-thinking": "claude-opus-5",
+	"claude-opus-4-8":        "claude-opus-4.8",
+	"claude-opus-4-7":        "claude-opus-4.7",
+	"claude-opus-4-6":        "claude-opus-4.6",
+	"claude-opus-4-5":        "claude-opus-4.5",
 	// OpenAI GPT-5.6（Kiro 2026-07-14 上线的 Sol/Terra/Luna 三档，无 thinking 变体）
 	"gpt-5.6-sol":   "gpt-5.6-sol",
 	"gpt-5.6-terra": "gpt-5.6-terra",
