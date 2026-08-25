@@ -641,6 +641,17 @@ func (s *KiroGatewayService) buildClient(auth *kiro.AuthManager, account *Accoun
 	return kiro.NewClient(auth, httpClient)
 }
 
+// FetchUsageLimits 查询 Kiro 账号在上游的积分用量（GetUsageLimits）。
+// 复用 buildAuthManager 的 token 刷新、回写与跨实例刷新锁。
+func (s *KiroGatewayService) FetchUsageLimits(ctx context.Context, account *Account) (*kiro.UsageLimitsResponse, error) {
+	auth, err := s.buildAuthManager(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	client := s.buildClient(auth, account)
+	return client.GetUsageLimits(ctx)
+}
+
 // KiroTokenCacheKey 返回 Kiro 账号用于分布式刷新锁的缓存键。
 func KiroTokenCacheKey(account *Account) string {
 	return "kiro:account:" + strconv.FormatInt(account.ID, 10)

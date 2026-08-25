@@ -151,6 +151,7 @@ func ProvideAccountUsageService(
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	kiroGatewayService *KiroGatewayService,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -166,6 +167,7 @@ func ProvideAccountUsageService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.kiroGatewayService = kiroGatewayService
 	return service
 }
 

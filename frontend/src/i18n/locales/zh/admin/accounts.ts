@@ -356,7 +356,10 @@ export default {
         grokLastProbe: '探测 {time}',
         grokLastHeadersSeen: '响应头 {time}',
         passiveSampled: '被动采样',
-        activeQuery: '查询'
+        activeQuery: '查询',
+        kiroCredits: '积分',
+        kiroOverage: '超额 {count}（+{charges} {currency}）',
+        kiroOverageEnabled: '已开启超额：最多可超 {cap} 积分，单价 {rate} {currency}/积分'
       },
       openaiQuotaReset: {
         count: '次数',

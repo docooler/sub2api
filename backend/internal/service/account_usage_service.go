@@ -14,6 +14,7 @@ import (
 	"time"
 
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -104,6 +105,12 @@ type antigravityUsageCache struct {
 	timestamp time.Time
 }
 
+// kiroUsageCache 缓存 Kiro GetUsageLimits 积分用量数据
+type kiroUsageCache struct {
+	usageInfo *UsageInfo
+	timestamp time.Time
+}
+
 const (
 	apiCacheTTL             = 3 * time.Minute
 	apiErrorCacheTTL        = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
@@ -121,8 +128,10 @@ type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	kiroCache         sync.Map           // accountID -> *kiroUsageCache
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	kiroFlight        singleflight.Group // 防止同一 Kiro 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
 }
@@ -180,6 +189,27 @@ type AICredit struct {
 	MinimumBalance float64 `json:"minimum_balance,omitempty"`
 }
 
+// KiroCreditUsage Kiro 账号的积分（Credit）使用情况快照。
+// 数值来自 CodeWhisperer GetUsageLimits 的 CREDIT usage breakdown。
+type KiroCreditUsage struct {
+	CurrentUsage      float64    `json:"current_usage"`
+	UsageLimit        float64    `json:"usage_limit"`
+	Utilization       float64    `json:"utilization"` // 0-100
+	ResetsAt          *time.Time `json:"resets_at,omitempty"`
+	DaysUntilReset    int        `json:"days_until_reset,omitempty"`
+	CurrentOverages   float64    `json:"current_overages,omitempty"`
+	OverageCap        float64    `json:"overage_cap,omitempty"`
+	OverageCharges    float64    `json:"overage_charges,omitempty"`
+	OverageRate       float64    `json:"overage_rate,omitempty"`
+	OverageStatus     string     `json:"overage_status,omitempty"` // ENABLED / DISABLED
+	Currency          string     `json:"currency,omitempty"`
+	Unit              string     `json:"unit,omitempty"`
+	DisplayName       string     `json:"display_name,omitempty"`
+	SubscriptionTitle string     `json:"subscription_title,omitempty"` // e.g. "KIRO POWER"
+	SubscriptionType  string     `json:"subscription_type,omitempty"`
+	Email             string     `json:"email,omitempty"`
+}
+
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
@@ -222,6 +252,9 @@ type UsageInfo struct {
 
 	// Antigravity AI Credits 余额
 	AICredits []AICredit `json:"ai_credits,omitempty"`
+
+	// Kiro 积分（Credit）使用情况，来自上游 GetUsageLimits
+	KiroCredit *KiroCreditUsage `json:"kiro_credit,omitempty"`
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
@@ -301,6 +334,9 @@ type AccountUsageService struct {
 	tlsFPProfileService     *TLSFingerprintProfileService
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
+
+	// kiroGatewayService 提供 Kiro GetUsageLimits 查询（wire 注入，见 ProvideAccountUsageService）。
+	kiroGatewayService *KiroGatewayService
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -371,6 +407,15 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 
 	if account.Platform == PlatformGrok {
 		usage, err := s.getGrokUsage(ctx, account, forceProbe)
+		if err == nil && usage != nil && usage.Error == "" {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
+	// Kiro 平台：调用上游 GetUsageLimits 获取积分用量
+	if account.Platform == PlatformKiro {
+		usage, err := s.getKiroUsage(ctx, account, forceProbe)
 		if err == nil && usage != nil && usage.Error == "" {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
@@ -955,6 +1000,114 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 		return &UsageInfo{UpdatedAt: &now}, nil
 	}
 	return usage, nil
+}
+
+// getKiroUsage 获取 Kiro 账户的积分用量（上游 GetUsageLimits），成功缓存 3 分钟，
+// 失败降级缓存 1 分钟（Error 字段而非 500），force=true 时绕过缓存。
+func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if s.kiroGatewayService == nil {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	kiroCacheTTL := func(usage *UsageInfo) time.Duration {
+		if usage != nil && usage.Error != "" {
+			return antigravityErrorTTL
+		}
+		return apiCacheTTL
+	}
+
+	// 1. 检查缓存
+	if !force {
+		if cached, ok := s.cache.kiroCache.Load(account.ID); ok {
+			if cache, ok := cached.(*kiroUsageCache); ok && time.Since(cache.timestamp) < kiroCacheTTL(cache.usageInfo) {
+				return cache.usageInfo, nil
+			}
+		}
+	}
+
+	// 2. singleflight 防止并发击穿
+	flightKey := fmt.Sprintf("kiro-usage:%d", account.ID)
+	result, flightErr, _ := s.cache.kiroFlight.Do(flightKey, func() (any, error) {
+		// 再次检查缓存（等待期间可能已被填充）
+		if !force {
+			if cached, ok := s.cache.kiroCache.Load(account.ID); ok {
+				if cache, ok := cached.(*kiroUsageCache); ok && time.Since(cache.timestamp) < kiroCacheTTL(cache.usageInfo) {
+					return cache.usageInfo, nil
+				}
+			}
+		}
+
+		// 使用独立 context，避免调用方 cancel 导致所有共享 flight 的请求失败
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer fetchCancel()
+
+		now := time.Now()
+		resp, err := s.kiroGatewayService.FetchUsageLimits(fetchCtx, account)
+		if err != nil {
+			degraded := &UsageInfo{UpdatedAt: &now, Error: err.Error()}
+			s.cache.kiroCache.Store(account.ID, &kiroUsageCache{usageInfo: degraded, timestamp: now})
+			return degraded, nil
+		}
+
+		usage := buildKiroUsageInfo(resp, now)
+		s.cache.kiroCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: now})
+		return usage, nil
+	})
+
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+	return usage, nil
+}
+
+// buildKiroUsageInfo 将 GetUsageLimits 响应映射为 UsageInfo.KiroCredit。
+func buildKiroUsageInfo(resp *kiro.UsageLimitsResponse, now time.Time) *UsageInfo {
+	usage := &UsageInfo{Source: "active", UpdatedAt: &now}
+
+	credit := &KiroCreditUsage{
+		DaysUntilReset:    resp.DaysUntilReset,
+		OverageStatus:     resp.OverageConfiguration.OverageStatus,
+		SubscriptionTitle: resp.SubscriptionInfo.SubscriptionTitle,
+		SubscriptionType:  resp.SubscriptionInfo.Type,
+		Email:             resp.UserInfo.Email,
+	}
+	if resp.NextDateReset > 0 {
+		t := time.Unix(int64(resp.NextDateReset), 0)
+		credit.ResetsAt = &t
+	}
+	if b := resp.CreditBreakdown(); b != nil {
+		credit.CurrentUsage = b.BestCurrentUsage()
+		credit.UsageLimit = b.BestUsageLimit()
+		credit.CurrentOverages = b.CurrentOveragesPrecise
+		if credit.CurrentOverages == 0 {
+			credit.CurrentOverages = b.CurrentOverages
+		}
+		credit.OverageCap = b.OverageCapPrecise
+		if credit.OverageCap == 0 {
+			credit.OverageCap = b.OverageCap
+		}
+		credit.OverageCharges = b.OverageCharges
+		credit.OverageRate = b.OverageRate
+		credit.Currency = b.Currency
+		credit.Unit = b.Unit
+		credit.DisplayName = b.DisplayName
+		if credit.UsageLimit > 0 {
+			credit.Utilization = credit.CurrentUsage / credit.UsageLimit * 100
+		}
+		if b.NextDateReset > 0 {
+			t := time.Unix(int64(b.NextDateReset), 0)
+			credit.ResetsAt = &t
+		}
+	}
+	usage.KiroCredit = credit
+	usage.SubscriptionTierRaw = credit.SubscriptionTitle
+	return usage
 }
 
 func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {

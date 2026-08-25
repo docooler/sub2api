@@ -1098,6 +1098,26 @@ export interface GrokBillingSummary {
   failed_windows?: string[]
 }
 
+// Kiro 账号的积分（Credit）使用情况（上游 GetUsageLimits）
+export interface KiroCreditUsage {
+  current_usage: number
+  usage_limit: number
+  utilization: number // 0-100
+  resets_at?: string | null
+  days_until_reset?: number
+  current_overages?: number
+  overage_cap?: number
+  overage_charges?: number
+  overage_rate?: number
+  overage_status?: string // ENABLED / DISABLED
+  currency?: string
+  unit?: string
+  display_name?: string
+  subscription_title?: string // e.g. "KIRO POWER"
+  subscription_type?: string
+  email?: string
+}
+
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
   updated_at: string | null
@@ -1125,6 +1145,7 @@ export interface AccountUsageInfo {
   grok_local_usage_7d?: WindowStats | null
   grok_local_usage_monthly?: WindowStats | null
   grok_billing?: GrokBillingSummary | null
+  kiro_credit?: KiroCreditUsage | null
   subscription_tier?: string
   subscription_tier_raw?: string
   ai_credits?: Array<{

@@ -430,6 +430,77 @@
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
 
+    <!-- Kiro accounts: upstream credit usage from GetUsageLimits -->
+    <template v-else-if="account.platform === 'kiro'">
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="error" class="text-xs text-red-500">
+        {{ error }}
+      </div>
+      <div v-else-if="usageInfo" class="space-y-1">
+        <!-- Subscription badge (e.g. KIRO POWER) -->
+        <div v-if="kiroSubscriptionLabel" class="mb-0.5">
+          <span class="inline-block rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+            {{ kiroSubscriptionLabel }}
+          </span>
+        </div>
+
+        <!-- Degraded error -->
+        <div
+          v-if="usageInfo.error"
+          class="truncate text-xs text-amber-600 dark:text-amber-400 max-w-[200px]"
+          :title="usageInfo.error"
+        >
+          {{ usageInfo.error }}
+        </div>
+
+        <template v-else-if="kiroCredit">
+          <UsageProgressBar
+            :label="t('admin.accounts.usageWindow.kiroCredits')"
+            :utilization="kiroCredit.utilization"
+            :resets-at="kiroCredit.resets_at || null"
+            color="indigo"
+          />
+          <div class="text-[10px] text-gray-500 dark:text-gray-400" :title="kiroCredit.email || undefined">
+            {{ kiroCreditText }}
+          </div>
+          <div v-if="kiroOverageText" class="text-[10px] text-amber-600 dark:text-amber-400">
+            {{ kiroOverageText }}
+          </div>
+        </template>
+
+        <!-- Active query button -->
+        <button
+          type="button"
+          class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
+          :disabled="activeQueryLoading"
+          @click="loadActiveUsage"
+        >
+          <svg
+            class="h-2.5 w-2.5"
+            :class="{ 'animate-spin': activeQueryLoading }"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+          {{ t('admin.accounts.usageWindow.activeQuery') }}
+        </button>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Gemini platform: show quota + local usage window -->
     <template v-else-if="account.platform === 'gemini'">
       <!-- Auth Type + Tier Badge (first line) -->
@@ -674,6 +745,8 @@ let visibilityObserver: IntersectionObserver | null = null
 const showUsageWindows = computed(() => {
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   if (props.account.platform === 'gemini') return true
+  // Kiro: credit usage comes from upstream GetUsageLimits regardless of account type.
+  if (props.account.platform === 'kiro') return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
@@ -692,6 +765,9 @@ const shouldFetchUsage = computed(() => {
   }
   if (props.account.platform === 'openai') {
     return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'kiro') {
+    return true
   }
   return false
 })
@@ -1158,6 +1234,44 @@ const grokRetryAfterLabel = computed(() => {
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.ceil(seconds / 60)
   return `${minutes}m`
+})
+
+// ===== Kiro credit usage (usageInfo.kiro_credit) =====
+
+const kiroCredit = computed(() => usageInfo.value?.kiro_credit || null)
+
+const kiroSubscriptionLabel = computed(() => {
+  return kiroCredit.value?.subscription_title || usageInfo.value?.subscription_tier_raw || null
+})
+
+const formatKiroCreditNumber = (value: number) =>
+  value.toLocaleString('en-US', { maximumFractionDigits: 1 })
+
+const kiroCreditText = computed(() => {
+  const c = kiroCredit.value
+  if (!c || c.usage_limit <= 0) return null
+  const unit = c.display_name || t('admin.accounts.usageWindow.kiroCredits')
+  return `${formatKiroCreditNumber(c.current_usage)} / ${formatKiroCreditNumber(c.usage_limit)} ${unit}`
+})
+
+const kiroOverageText = computed(() => {
+  const c = kiroCredit.value
+  if (!c) return null
+  if ((c.current_overages ?? 0) > 0 || (c.overage_charges ?? 0) > 0) {
+    return t('admin.accounts.usageWindow.kiroOverage', {
+      count: formatKiroCreditNumber(c.current_overages ?? 0),
+      charges: (c.overage_charges ?? 0).toFixed(2),
+      currency: c.currency || 'USD'
+    })
+  }
+  if (c.overage_status === 'ENABLED' && (c.overage_cap ?? 0) > 0) {
+    return t('admin.accounts.usageWindow.kiroOverageEnabled', {
+      cap: formatKiroCreditNumber(c.overage_cap ?? 0),
+      rate: (c.overage_rate ?? 0).toString(),
+      currency: c.currency || 'USD'
+    })
+  }
+  return null
 })
 
 const formatWindowRequests = (stats: WindowStats) => formatCompactNumber(stats.requests, { allowBillions: false })

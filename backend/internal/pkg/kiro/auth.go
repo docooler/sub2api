@@ -156,6 +156,13 @@ func (a *AuthManager) ProfileArn() string {
 	return a.creds.ProfileArn
 }
 
+// Region returns the configured API region.
+func (a *AuthManager) Region() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.creds.Region
+}
+
 // Fingerprint returns the machine fingerprint used for the User-Agent.
 func (a *AuthManager) Fingerprint() string { return a.fingerprint }
 

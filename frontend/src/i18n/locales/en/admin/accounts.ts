@@ -1299,7 +1299,10 @@ export default {
         grokLastProbe: 'Probe {time}',
         grokLastHeadersSeen: 'Headers {time}',
         passiveSampled: 'Passive',
-        activeQuery: 'Query'
+        activeQuery: 'Query',
+        kiroCredits: 'Credits',
+        kiroOverage: 'Overage {count} (+{charges} {currency})',
+        kiroOverageEnabled: 'Overage enabled: up to {cap} extra credits at {rate} {currency}/credit'
       },
       openaiQuotaReset: {
         count: 'Credits',
