@@ -30,11 +30,22 @@ type KiroGatewayService struct {
 	// tokenCache 提供跨实例分布式刷新锁（复用 Gemini/Antigravity 等使用的 Redis
 	// 实现）。可为 nil（无 Redis 时降级为仅进程内互斥锁）。
 	tokenCache GeminiTokenCache
+	// rateLimitService 用于把上游 402（积分耗尽）/429 标记为账号级冷却，
+	// 让调度器自动摘除并在重置后恢复。可为 nil（仅跳过标记）。
+	rateLimitService *RateLimitService
 }
 
 // NewKiroGatewayService 构造 Kiro 网关服务。tokenCache 可为 nil。
 func NewKiroGatewayService(accountRepo AccountRepository, tokenCache GeminiTokenCache) *KiroGatewayService {
 	return &KiroGatewayService{accountRepo: accountRepo, tokenCache: tokenCache}
+}
+
+// ProvideKiroGatewayService wire 装配入口：在 NewKiroGatewayService 基础上
+// 注入 RateLimitService（保持 New 构造器签名兼容测试）。
+func ProvideKiroGatewayService(accountRepo AccountRepository, tokenCache GeminiTokenCache, rateLimitService *RateLimitService) *KiroGatewayService {
+	s := NewKiroGatewayService(accountRepo, tokenCache)
+	s.rateLimitService = rateLimitService
+	return s
 }
 
 // Credential keys stored on the account's credentials map.
@@ -113,6 +124,11 @@ func (s *KiroGatewayService) prepareUpstream(ctx context.Context, account *Accou
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			reqLog.Warn("kiro.upstream_error", zap.Int("status", resp.StatusCode), zap.ByteString("body", errBody))
+			// 402（积分耗尽）/429：标记账号级冷却让调度器摘除，重置后自动恢复。
+			// 其他状态码不接入（403 由 kiro.Client 内部刷新 token 处理，误标会永久禁用账号）。
+			if s.rateLimitService != nil && (resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusTooManyRequests) {
+				s.rateLimitService.HandleUpstreamError(reqCtx, account, resp.StatusCode, resp.Header, errBody)
+			}
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: errBody, ResponseHeaders: resp.Header}
 		}
 		return resp, nil

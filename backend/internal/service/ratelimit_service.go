@@ -334,6 +334,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 		}
 	case 402:
+		// Kiro: 积分耗尽（reason MONTHLY/DAILY_REQUEST_COUNT）是周期性限额，
+		// 标记限流到重置点后自动恢复，而非永久禁用。
+		if account.Platform == PlatformKiro && s.handleKiroCreditExhausted(ctx, account, upstreamMsg, responseBody) {
+			shouldDisable = true
+			break
+		}
 		// OpenAI: deactivated_workspace 表示工作区已停用，直接标记 error
 		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail.code").String() == "deactivated_workspace" {
 			msg := "Workspace deactivated (402): workspace has been deactivated"
@@ -1036,6 +1042,38 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	}
 
 	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt)
+}
+
+// handleKiroCreditExhausted 处理 Kiro 402 积分耗尽。
+// 上游响应形如 {"message":"You have reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}；
+// Kiro 积分按 UTC 自然月重置（GetUsageLimits.nextDateReset 恒为次月 1 日 00:00 UTC），
+// 因此月度限额限流到次月 1 日、日度限额限流到次日 0 点（均 UTC），到点由
+// IsSchedulable 的时间判断自动恢复。返回 false 表示非积分限额类 402，走通用逻辑。
+func (s *RateLimitService) handleKiroCreditExhausted(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) bool {
+	reason := gjson.GetBytes(responseBody, "reason").String()
+	now := time.Now().UTC()
+	var resetAt time.Time
+	switch reason {
+	case "MONTHLY_REQUEST_COUNT", "MONTHLY_LIMIT_REACHED":
+		resetAt = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	case "DAILY_REQUEST_COUNT", "DAILY_LIMIT_REACHED":
+		resetAt = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+	default:
+		return false
+	}
+
+	s.notifyAccountSchedulingBlocked(account, resetAt, "kiro_credit_exhausted")
+	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+		slog.Warn("kiro_credit_exhausted_set_rate_limited_failed", "account_id", account.ID, "error", err)
+		return false
+	}
+	slog.Info("kiro_account_credit_exhausted",
+		"account_id", account.ID,
+		"reason", reason,
+		"upstream_msg", upstreamMsg,
+		"reset_at", resetAt,
+		"reset_in", time.Until(resetAt).Truncate(time.Second))
+	return true
 }
 
 func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, account *Account, reason string) {
