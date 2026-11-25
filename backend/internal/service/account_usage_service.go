@@ -134,6 +134,10 @@ type UsageCache struct {
 	kiroFlight        singleflight.Group // 防止同一 Kiro 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
+
+	// Kiro 积分感知调度（见 kiro_credit_scheduling.go）
+	kiroCreditSamples  sync.Map // accountID -> *kiroCreditSample（仅成功结果）
+	kiroCreditAttempts sync.Map // accountID -> time.Time（调度器上次触发后台刷新的时间）
 }
 
 // NewUsageCache 创建 UsageCache 实例
@@ -1052,6 +1056,7 @@ func (s *AccountUsageService) getKiroUsage(ctx context.Context, account *Account
 
 		usage := buildKiroUsageInfo(resp, now)
 		s.cache.kiroCache.Store(account.ID, &kiroUsageCache{usageInfo: usage, timestamp: now})
+		s.cache.storeKiroCreditSample(account.ID, usage, now)
 		return usage, nil
 	})
 

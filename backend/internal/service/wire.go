@@ -152,6 +152,7 @@ func ProvideAccountUsageService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
 	kiroGatewayService *KiroGatewayService,
+	gatewayService *GatewayService,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -168,6 +169,10 @@ func ProvideAccountUsageService(
 	)
 	service.agentIdentityWS = openAIGatewayService
 	service.kiroGatewayService = kiroGatewayService
+	// 调度器读取同一份积分用量缓存，实现 Kiro 积分感知选号。
+	if gatewayService != nil {
+		gatewayService.SetKiroCreditProvider(service)
+	}
 	return service
 }
 

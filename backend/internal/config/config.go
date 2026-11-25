@@ -1211,6 +1211,15 @@ type GatewaySchedulingConfig struct {
 	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
 
+	// PreferLowCreditUsage 开启后，同优先级的 Kiro 账号之间优先调用积分使用百分比
+	// 更低的账号（数据来自上游 GetUsageLimits，后台异步刷新），使各账号积分消耗
+	// 趋于均衡。仅影响 Kiro 平台账号；用量未知时退回「负载率 → LRU」。默认 true。
+	PreferLowCreditUsage bool `mapstructure:"prefer_low_credit_usage"`
+	// CreditUsageSoftConcurrency 积分感知调度的并发软上限：账号当前并发达到该值后，
+	// 新会话改选其余未达上限的账号里积分使用率最低的，避免流量集中在单个账号上；
+	// 所有账号都达到上限时退回「负载率 → LRU」均摊。0 表示不限制。默认 3。
+	CreditUsageSoftConcurrency int `mapstructure:"credit_usage_soft_concurrency"`
+
 	// 负载计算
 	LoadBatchEnabled    bool `mapstructure:"load_batch_enabled"`
 	LoadBatchCacheTTLMS int  `mapstructure:"load_batch_cache_ttl_ms"`
@@ -2135,6 +2144,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
+	viper.SetDefault("gateway.scheduling.prefer_low_credit_usage", true)
+	viper.SetDefault("gateway.scheduling.credit_usage_soft_concurrency", 3)
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
 	viper.SetDefault("gateway.scheduling.snapshot_mget_chunk_size", 128)

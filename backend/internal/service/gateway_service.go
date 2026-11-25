@@ -696,6 +696,9 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	// kiroCreditProvider 提供 Kiro 账号积分使用百分比，用于同优先级内的积分感知调度。
+	// 可为 nil（不启用）。经 SetKiroCreditProvider 注入。
+	kiroCreditProvider KiroCreditUsageProvider
 }
 
 // NewGatewayService creates a new GatewayService
