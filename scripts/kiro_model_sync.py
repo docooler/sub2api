@@ -133,7 +133,7 @@ def load_accounts(args):
                     coalesce(a.credentials->>'region','us-east-1')),
            coalesce(a.credentials->>'expires_at','')
     from accounts a
-    where a.platform='kiro' and a.status='active'
+    where a.platform='kiro' and a.status='active' and a.deleted_at is null
     order by a.id;
     """
     rows = []
